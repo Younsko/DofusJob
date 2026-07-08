@@ -88,6 +88,8 @@ const DEFAULT_LEVELS = {
 const MAP_WIDTH = 1120;
 const MAP_HEIGHT = 760;
 const TILE_SIZE = 250;
+const MAX_RASTER_TILES = 96;
+const MAX_RENDERABLE_CANDIDATES = 80;
 const DOFUSDB_WORLDS = {
   1: {
     id: 1,
@@ -283,9 +285,44 @@ function getMapPoints() {
 }
 
 function getMapProjectionContext() {
-  const bounds = getBounds(getMapPoints());
+  const points = getMapPoints();
+  const bounds = getBounds(points);
+  const world = DOFUSDB_WORLDS[state.worldMap];
+
+  if (world) {
+    const pixelBounds = getWorldPixelBounds(points, world);
+    const pixelProjection = createPixelProjection(pixelBounds, MAP_WIDTH, MAP_HEIGHT);
+    const project = (point) => pixelProjection.project(dofusGridToPixel(point, world));
+    const projectCenter = (point) => pixelProjection.project(dofusCenterToPixel(point, world));
+    const unprojectCenter = (point) => pixelToDofusCenter(pixelProjection.unproject(point), world);
+    const unprojectPixel = (point) => pixelProjection.unproject(point);
+
+    return {
+      bounds,
+      pixelBounds,
+      project,
+      projectCenter,
+      projectPixel: pixelProjection.project,
+      unprojectCenter,
+      unprojectPixel,
+      width: MAP_WIDTH,
+      height: MAP_HEIGHT,
+      world
+    };
+  }
+
   const project = createProjector(bounds, MAP_WIDTH, MAP_HEIGHT);
-  return { bounds, project, width: MAP_WIDTH, height: MAP_HEIGHT };
+  return {
+    bounds,
+    project,
+    projectCenter: project,
+    projectPixel: null,
+    unprojectCenter: (point) => unprojectMapPoint(point, bounds, MAP_WIDTH, MAP_HEIGHT),
+    unprojectPixel: null,
+    width: MAP_WIDTH,
+    height: MAP_HEIGHT,
+    world: null
+  };
 }
 
 function getResourceStats() {
@@ -748,7 +785,7 @@ function getRenderableSpots(plan) {
   const route = plan.route;
   const candidates = plan.candidates
     .filter((spot) => !routeIds.has(spot.id))
-    .slice(0, 520);
+    .slice(0, MAX_RENDERABLE_CANDIDATES);
   return [...route, ...candidates];
 }
 
@@ -761,29 +798,30 @@ function renderMap() {
   const currentZaaps = getCurrentZaaps();
   const currentTransporters = getCurrentTransporters();
   const currentSpots = getRenderableSpots(plan);
-  const { bounds, project, width, height } = getMapProjectionContext();
-  const viewBox = getMapViewBox(width, height, project);
-  const visibleBounds = getVisibleDofusBounds(viewBox, bounds, width, height);
-  const rasterTiles = renderDofusDbTiles(visibleBounds, project);
+  const context = getMapProjectionContext();
+  const { bounds, project, projectCenter, width, height } = context;
+  const viewBox = getMapViewBox(width, height, projectCenter);
+  const visiblePixelBounds = getVisiblePixelBounds(viewBox, context);
+  const rasterTiles = renderDofusDbTiles(visiblePixelBounds, context);
   const hasRaster = Boolean(rasterTiles);
   const grid = state.showGrid ? renderGrid(bounds, width, height, project) : '';
   const routeSegments = plan.route
     .flatMap((step) =>
-      step.travel.segments.map((segment) => renderRouteSegment(segment, project))
+      step.travel.segments.map((segment) => renderRouteSegment(segment, projectCenter))
     )
     .join('');
-  const routePins = plan.route.map((step) => renderRoutePin(step, project)).join('');
+  const routePins = plan.route.map((step) => renderRoutePin(step, projectCenter)).join('');
   const zaaps = state.showZaaps
     ? [
-        ...currentZaaps.map((zaap) => renderTravelMarker(zaap, project)),
-        ...currentTransporters.map((transporter) => renderTravelMarker(transporter, project))
+        ...currentZaaps.map((zaap) => renderTravelMarker(zaap, projectCenter)),
+        ...currentTransporters.map((transporter) => renderTravelMarker(transporter, projectCenter))
       ].join('')
     : '';
   const spots = currentSpots
-    .map((spot) => renderSpotMarker(spot, project, resourceMap, candidateIds, routeIds))
+    .map((spot) => renderSpotMarker(spot, projectCenter, resourceMap, candidateIds, routeIds))
     .join('');
   const mapCells = renderMapCells(currentMapCells, project, plan);
-  const start = project(state.start);
+  const start = projectCenter(state.start);
 
   return `
     <div class="map-frame">
@@ -828,6 +866,30 @@ function getBounds(points) {
   };
 }
 
+function getWorldPixelBounds(points, world) {
+  const pixelRects = points.map((point) => {
+    const topLeft = dofusGridToPixel(point, world);
+    return {
+      minX: topLeft.x,
+      maxX: topLeft.x + world.mapWidth,
+      minY: topLeft.y,
+      maxY: topLeft.y + world.mapHeight
+    };
+  });
+  const minX = Math.min(...pixelRects.map((rect) => rect.minX));
+  const maxX = Math.max(...pixelRects.map((rect) => rect.maxX));
+  const minY = Math.min(...pixelRects.map((rect) => rect.minY));
+  const maxY = Math.max(...pixelRects.map((rect) => rect.maxY));
+  const padding = Math.max(world.mapWidth, world.mapHeight) * 8;
+
+  return {
+    minX: clamp(minX - padding, 0, world.totalWidth),
+    maxX: clamp(maxX + padding, 0, world.totalWidth),
+    minY: clamp(minY - padding, 0, world.totalHeight),
+    maxY: clamp(maxY + padding, 0, world.totalHeight)
+  };
+}
+
 function createProjector(bounds, width, height) {
   const padding = 56;
   const rangeX = bounds.maxX - bounds.minX || 1;
@@ -838,24 +900,54 @@ function createProjector(bounds, width, height) {
   });
 }
 
-function renderDofusDbTiles(bounds, project) {
-  const world = DOFUSDB_WORLDS[state.worldMap];
-  if (!world) return '';
+function createPixelProjection(bounds, width, height) {
+  const padding = 34;
+  const rangeX = bounds.maxX - bounds.minX || 1;
+  const rangeY = bounds.maxY - bounds.minY || 1;
+  const usableWidth = width - padding * 2;
+  const usableHeight = height - padding * 2;
+  const scale = Math.min(usableWidth / rangeX, usableHeight / rangeY);
+  const contentWidth = rangeX * scale;
+  const contentHeight = rangeY * scale;
+  const offsetX = (width - contentWidth) / 2;
+  const offsetY = (height - contentHeight) / 2;
 
-  const scale = getDofusDbScale(world);
+  return {
+    project: (point) => ({
+      x: offsetX + (Number(point.x) - bounds.minX) * scale,
+      y: offsetY + (Number(point.y) - bounds.minY) * scale
+    }),
+    unproject: (point) => ({
+      x: bounds.minX + (Number(point.x) - offsetX) / scale,
+      y: bounds.minY + (Number(point.y) - offsetY) / scale
+    })
+  };
+}
+
+function renderDofusDbTiles(pixelBounds, context) {
+  const { world, projectPixel } = context;
+  if (!world || !projectPixel || !pixelBounds) return '';
+
+  const scale = getDofusDbScale(world, pixelBounds);
   const columns = Math.ceil((world.totalWidth * scale.x) / TILE_SIZE);
   const rows = Math.ceil((world.totalHeight * scale.y) / TILE_SIZE);
-  const minTileX = clamp(Math.floor(dofusToScaledPixelX(bounds.minX, world, scale) / TILE_SIZE) - 1, 0, columns - 1);
-  const maxTileX = clamp(Math.ceil(dofusToScaledPixelX(bounds.maxX, world, scale) / TILE_SIZE) + 1, 0, columns - 1);
-  const minTileY = clamp(Math.floor(dofusToScaledPixelY(bounds.minY, world, scale) / TILE_SIZE) - 1, 0, rows - 1);
-  const maxTileY = clamp(Math.ceil(dofusToScaledPixelY(bounds.maxY, world, scale) / TILE_SIZE) + 1, 0, rows - 1);
+  const minTileX = clamp(Math.floor((pixelBounds.minX * scale.x) / TILE_SIZE) - 1, 0, columns - 1);
+  const maxTileX = clamp(Math.ceil((pixelBounds.maxX * scale.x) / TILE_SIZE) + 1, 0, columns - 1);
+  const minTileY = clamp(Math.floor((pixelBounds.minY * scale.y) / TILE_SIZE) - 1, 0, rows - 1);
+  const maxTileY = clamp(Math.ceil((pixelBounds.maxY * scale.y) / TILE_SIZE) + 1, 0, rows - 1);
   const tiles = [];
 
   for (let tileY = minTileY; tileY <= maxTileY; tileY += 1) {
     for (let tileX = minTileX; tileX <= maxTileX; tileX += 1) {
       const tileNumber = tileY * columns + tileX + 1;
-      const topLeft = project(scaledPixelToDofus(tileX * TILE_SIZE, tileY * TILE_SIZE, world, scale));
-      const bottomRight = project(scaledPixelToDofus((tileX + 1) * TILE_SIZE, (tileY + 1) * TILE_SIZE, world, scale));
+      const topLeft = projectPixel({
+        x: (tileX * TILE_SIZE) / scale.x,
+        y: (tileY * TILE_SIZE) / scale.y
+      });
+      const bottomRight = projectPixel({
+        x: ((tileX + 1) * TILE_SIZE) / scale.x,
+        y: ((tileY + 1) * TILE_SIZE) / scale.y
+      });
       const x = Math.min(topLeft.x, bottomRight.x);
       const y = Math.min(topLeft.y, bottomRight.y);
       const width = Math.abs(bottomRight.x - topLeft.x);
@@ -875,43 +967,65 @@ function parseViewBox(value) {
   return { x, y, width, height };
 }
 
-function getVisibleDofusBounds(viewBox, bounds, width, height) {
+function getVisiblePixelBounds(viewBox, context) {
+  if (!context.unprojectPixel || !context.pixelBounds) return null;
   const visible = parseViewBox(viewBox);
-  const topLeft = unprojectMapPoint({ x: visible.x, y: visible.y }, bounds, width, height);
-  const bottomRight = unprojectMapPoint(
-    { x: visible.x + visible.width, y: visible.y + visible.height },
-    bounds,
-    width,
-    height
-  );
-  const padding = clamp(34 / clampMapZoom(state.mapZoom), 8, 22);
+  const topLeft = context.unprojectPixel({ x: visible.x, y: visible.y });
+  const bottomRight = context.unprojectPixel({
+    x: visible.x + visible.width,
+    y: visible.y + visible.height
+  });
+  const padding = Math.max(context.world.mapWidth, context.world.mapHeight) * clamp(7 / clampMapZoom(state.mapZoom), 2, 5);
 
   return {
-    minX: Math.min(topLeft.x, bottomRight.x) - padding,
-    maxX: Math.max(topLeft.x, bottomRight.x) + padding,
-    minY: Math.min(topLeft.y, bottomRight.y) - padding,
-    maxY: Math.max(topLeft.y, bottomRight.y) + padding
+    minX: clamp(Math.min(topLeft.x, bottomRight.x) - padding, 0, context.world.totalWidth),
+    maxX: clamp(Math.max(topLeft.x, bottomRight.x) + padding, 0, context.world.totalWidth),
+    minY: clamp(Math.min(topLeft.y, bottomRight.y) - padding, 0, context.world.totalHeight),
+    maxY: clamp(Math.max(topLeft.y, bottomRight.y) + padding, 0, context.world.totalHeight)
   };
 }
 
-function getDofusDbScale(world) {
+function getDofusDbScale(world, pixelBounds) {
   const zoom = clampMapZoom(state.mapZoom);
-  const target = zoom >= 3.6 ? 1 : zoom >= 2.6 ? 0.8 : zoom >= 1.8 ? 0.6 : zoom >= 1.2 ? 0.4 : 0.2;
-  return world.scales.find((scale) => scale.name === String(target)) || world.scales[0];
+  const target = zoom >= 4.2 ? 1 : zoom >= 3.4 ? 0.8 : zoom >= 2.6 ? 0.6 : zoom >= 2.1 ? 0.4 : 0.2;
+  const targetIndex = Math.max(0, world.scales.findIndex((scale) => scale.name === String(target)));
+
+  for (let index = targetIndex; index >= 0; index -= 1) {
+    const scale = world.scales[index];
+    if (countTilesForScale(world, pixelBounds, scale) <= MAX_RASTER_TILES) return scale;
+  }
+
+  return world.scales[0];
 }
 
-function dofusToScaledPixelX(x, world, scale) {
-  return (world.origineX + Number(x) * world.mapWidth) * scale.x;
+function countTilesForScale(world, pixelBounds, scale) {
+  const columns = Math.ceil((world.totalWidth * scale.x) / TILE_SIZE);
+  const rows = Math.ceil((world.totalHeight * scale.y) / TILE_SIZE);
+  const minTileX = clamp(Math.floor((pixelBounds.minX * scale.x) / TILE_SIZE) - 1, 0, columns - 1);
+  const maxTileX = clamp(Math.ceil((pixelBounds.maxX * scale.x) / TILE_SIZE) + 1, 0, columns - 1);
+  const minTileY = clamp(Math.floor((pixelBounds.minY * scale.y) / TILE_SIZE) - 1, 0, rows - 1);
+  const maxTileY = clamp(Math.ceil((pixelBounds.maxY * scale.y) / TILE_SIZE) + 1, 0, rows - 1);
+  return Math.max(0, maxTileX - minTileX + 1) * Math.max(0, maxTileY - minTileY + 1);
 }
 
-function dofusToScaledPixelY(y, world, scale) {
-  return (world.origineY + Number(y) * world.mapHeight) * scale.y;
-}
-
-function scaledPixelToDofus(pixelX, pixelY, world, scale) {
+function dofusGridToPixel(point, world) {
   return {
-    x: pixelX / scale.x / world.mapWidth - world.origineX / world.mapWidth,
-    y: pixelY / scale.y / world.mapHeight - world.origineY / world.mapHeight
+    x: world.origineX + Number(point.x) * world.mapWidth,
+    y: world.origineY + Number(point.y) * world.mapHeight
+  };
+}
+
+function dofusCenterToPixel(point, world) {
+  return {
+    x: world.origineX + (Number(point.x) + 0.5) * world.mapWidth,
+    y: world.origineY + (Number(point.y) + 0.5) * world.mapHeight
+  };
+}
+
+function pixelToDofusCenter(point, world) {
+  return {
+    x: (Number(point.x) - world.origineX) / world.mapWidth - 0.5,
+    y: (Number(point.y) - world.origineY) / world.mapHeight - 0.5
   };
 }
 
@@ -949,14 +1063,12 @@ function getSvgPoint(event, svg) {
   return point.matrixTransform(svg.getScreenCTM().inverse());
 }
 
-function getMapCenterFromViewBox(svg, bounds, width, height) {
+function getMapCenterFromViewBox(svg, context) {
   const viewBox = svg.viewBox.baseVal;
-  return unprojectMapPoint(
-    { x: viewBox.x + viewBox.width / 2, y: viewBox.y + viewBox.height / 2 },
-    bounds,
-    width,
-    height
-  );
+  return context.unprojectCenter({
+    x: viewBox.x + viewBox.width / 2,
+    y: viewBox.y + viewBox.height / 2
+  });
 }
 
 function renderGrid(bounds, width, height, project) {
@@ -984,34 +1096,38 @@ function renderGrid(bounds, width, height, project) {
 }
 
 function renderMapCells(mapCells, project, plan) {
-  const candidateSubareas = new Set(plan.candidates.map((spot) => spot.subareaId).filter(Boolean));
-  const routeSubareas = new Set(plan.route.map((spot) => spot.subareaId).filter(Boolean));
-  const sampleA = project({ x: 0, y: 0 });
-  const sampleB = project({ x: 1, y: 1 });
-  const size = Math.max(2.2, Math.min(7, Math.abs(sampleB.x - sampleA.x) * 0.72));
-  const base = [];
+  const candidateMapIds = new Set(
+    plan.candidates
+      .slice(0, 500)
+      .map((spot) => spot.mapId)
+      .filter(Boolean)
+  );
+  const routeMapIds = new Set(plan.route.map((spot) => spot.mapId).filter(Boolean));
   const harvestable = [];
   const route = [];
 
   for (const map of mapCells) {
-    const point = project(map);
-    const path = rectPath(point.x - size / 2, point.y - size / 2, size);
-    base.push(path);
-    if (candidateSubareas.has(map.subareaId)) harvestable.push(path);
-    if (routeSubareas.has(map.subareaId)) route.push(path);
+    const isCandidate = candidateMapIds.has(map.id);
+    const isRoute = routeMapIds.has(map.id);
+    if (!isCandidate && !isRoute) continue;
+
+    const topLeft = project(map);
+    const bottomRight = project({ x: Number(map.x) + 1, y: Number(map.y) + 1 });
+    const path = rectPath(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
+    if (isCandidate) harvestable.push(path);
+    if (isRoute) route.push(path);
   }
 
   return `
     <g class="map-cells">
-      <path class="map-cell-layer map-cell-base" d="${base.join(' ')}"></path>
       <path class="map-cell-layer map-cell-harvestable" d="${harvestable.join(' ')}"></path>
       <path class="map-cell-layer map-cell-route" d="${route.join(' ')}"></path>
     </g>
   `;
 }
 
-function rectPath(x, y, size) {
-  return `M${x.toFixed(2)} ${y.toFixed(2)}h${size.toFixed(2)}v${size.toFixed(2)}h-${size.toFixed(2)}Z`;
+function rectPath(x, y, width, height) {
+  return `M${x.toFixed(2)} ${y.toFixed(2)}h${width.toFixed(2)}v${height.toFixed(2)}h-${width.toFixed(2)}Z`;
 }
 
 function renderContinents(project) {
@@ -1126,7 +1242,7 @@ function renderSpotMarker(spot, project, resourceMap, candidateIds, routeIds) {
   const isRoute = routeIds.has(spot.id);
   const isFocused = state.focusedSpotId === spot.id;
   const quantity = Object.values(spot.resources || {}).reduce((sum, value) => sum + Number(value || 0), 0);
-  const radius = isRoute ? 11 : isCandidate ? Math.min(10, 5 + quantity / 7) : 4;
+  const radius = isRoute ? 10 : isFocused ? 8 : isCandidate ? 3.4 : 2.5;
   const iconSize = isRoute ? 20 : 15;
   const className = [
     'spot-marker',
@@ -1140,7 +1256,7 @@ function renderSpotMarker(spot, project, resourceMap, candidateIds, routeIds) {
     <g class="${className}" data-action="focus-spot" data-spot-id="${spot.id}" transform="translate(${point.x} ${point.y})" style="--job-color:${job.color};--job-soft:${job.softColor}">
       <circle r="${radius}"></circle>
       ${
-        dominantResource?.icon && (isRoute || isCandidate)
+        dominantResource?.icon && (isRoute || isFocused)
           ? `<image class="spot-resource-icon" href="${escapeHtml(dominantResource.icon)}" x="${-iconSize / 2}" y="${-iconSize / 2}" width="${iconSize}" height="${iconSize}" />`
           : ''
       }
@@ -1339,11 +1455,11 @@ function bindEvents() {
 function handleMapWheel(event) {
   event.preventDefault();
   const svg = event.currentTarget;
-  const { bounds, width, height } = getMapProjectionContext();
+  const context = getMapProjectionContext();
   const svgPoint = getSvgPoint(event, svg);
   const factor = event.deltaY < 0 ? 1.18 : 1 / 1.18;
 
-  state.mapFocus = unprojectMapPoint(svgPoint, bounds, width, height);
+  state.mapFocus = context.unprojectCenter(svgPoint);
   state.mapZoom = clampMapZoom(state.mapZoom * factor);
   rerender(true, { preserveScroll: true });
 }
@@ -1355,12 +1471,12 @@ function handleMapPointerDown(event) {
 
   event.preventDefault();
   const svg = event.currentTarget;
-  const { bounds, width, height } = getMapProjectionContext();
+  const context = getMapProjectionContext();
   mapDrag = {
     pointerId: getDragPointerId(event),
     svg,
     startPoint: getSvgPoint(event, svg),
-    startFocus: getMapCenterFromViewBox(svg, bounds, width, height),
+    startFocus: getMapCenterFromViewBox(svg, context),
     moved: false
   };
   svg.classList.add('is-panning');
@@ -1375,7 +1491,7 @@ function handleMapPointerMove(event) {
   }
   event.preventDefault();
 
-  const { bounds, project, width, height } = getMapProjectionContext();
+  const { projectCenter, unprojectCenter, width, height } = getMapProjectionContext();
   const currentPoint = getSvgPoint(event, mapDrag.svg);
   const delta = {
     x: currentPoint.x - mapDrag.startPoint.x,
@@ -1383,14 +1499,9 @@ function handleMapPointerMove(event) {
   };
   if (Math.abs(delta.x) + Math.abs(delta.y) > 2) mapDrag.moved = true;
 
-  const startCenter = project(mapDrag.startFocus);
-  state.mapFocus = unprojectMapPoint(
-    { x: startCenter.x - delta.x, y: startCenter.y - delta.y },
-    bounds,
-    width,
-    height
-  );
-  mapDrag.svg.setAttribute('viewBox', getMapViewBox(width, height, project));
+  const startCenter = projectCenter(mapDrag.startFocus);
+  state.mapFocus = unprojectCenter({ x: startCenter.x - delta.x, y: startCenter.y - delta.y });
+  mapDrag.svg.setAttribute('viewBox', getMapViewBox(width, height, projectCenter));
 }
 
 function handleMapPointerUp(event) {

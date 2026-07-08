@@ -636,13 +636,13 @@ p {
 }
 
 .map-svg.has-raster .map-cell-harvestable {
-  fill: rgba(244, 211, 111, 0.14);
-  stroke: rgba(255, 236, 169, 0.22);
+  fill: rgba(244, 211, 111, 0.08);
+  stroke: rgba(255, 236, 169, 0.16);
 }
 
 .map-svg.has-raster .map-cell-route {
-  fill: rgba(216, 106, 88, 0.42);
-  stroke: rgba(255, 245, 220, 0.64);
+  fill: rgba(216, 106, 88, 0.5);
+  stroke: rgba(255, 245, 220, 0.78);
 }
 
 .grid-line {
@@ -695,8 +695,8 @@ p {
 
 .spot-marker.is-candidate circle {
   fill: var(--job-color);
-  stroke: #f6f1dd;
-  stroke-width: 1.6;
+  stroke: rgba(246, 241, 221, 0.82);
+  stroke-width: 1.2;
 }
 
 .spot-marker.is-route circle {
