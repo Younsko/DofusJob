@@ -45,18 +45,12 @@ export function travelBetween(from, target, zaaps, options = {}) {
     };
   }
 
-  const originZaap = nearestZaap(from, zaaps);
   const targetZaap = nearestZaap(target, zaaps);
-  const walkToOrigin = manhattan(from, originZaap);
   const walkFromTarget = manhattan(targetZaap, target);
-  const viaZaapCost = walkToOrigin + ZAAP_FLAT_COST + walkFromTarget;
+  const viaZaapCost = ZAAP_FLAT_COST + walkFromTarget;
 
-  if (originZaap.id !== targetZaap.id && viaZaapCost + DIRECT_WALK_BIAS < directCost) {
-    const segments = [];
-    if (walkToOrigin > 0) {
-      segments.push({ mode: 'walk', from, to: originZaap, cost: walkToOrigin });
-    }
-    segments.push({ mode: 'zaap', from: originZaap, to: targetZaap, cost: ZAAP_FLAT_COST });
+  if (viaZaapCost + DIRECT_WALK_BIAS < directCost) {
+    const segments = [{ mode: 'zaap', from, to: targetZaap, cost: ZAAP_FLAT_COST }];
     if (walkFromTarget > 0) {
       segments.push({ mode: 'walk', from: targetZaap, to: target, cost: walkFromTarget });
     }
@@ -64,9 +58,8 @@ export function travelBetween(from, target, zaaps, options = {}) {
     return {
       mode: 'zaap',
       cost: viaZaapCost,
-      walkCost: walkToOrigin + walkFromTarget,
+      walkCost: walkFromTarget,
       zaapCount: 1,
-      originZaap,
       targetZaap,
       from,
       target,
@@ -237,9 +230,8 @@ export function formatLegInstruction(step) {
   const target = `${step.name} ${coordLabel(step)}`;
 
   if (travel.mode === 'zaap') {
-    const origin = `${travel.originZaap.name} ${coordLabel(travel.originZaap)}`;
     const destination = `${travel.targetZaap.name} ${coordLabel(travel.targetZaap)}`;
-    return `Marche jusqu a ${origin}, prends ${destination}, puis va sur ${target}.`;
+    return `TP au ${destination}, puis va sur ${target}.`;
   }
 
   return `Marche jusqu a ${target}.`;
@@ -251,6 +243,25 @@ export function summarizeStepResources(step) {
     .join(', ');
 }
 
+export function getRouteActionLines(step) {
+  const lines = [];
+  if (step.travel.mode === 'zaap') {
+    lines.push({
+      type: step.travel.targetZaap.type === 'transporter' ? 'transport' : 'zaap',
+      label: step.travel.targetZaap.name,
+      point: step.travel.targetZaap
+    });
+  }
+
+  lines.push({
+    type: 'travel',
+    label: step.name,
+    point: step
+  });
+
+  return lines;
+}
+
 export function exportRouteText(plan) {
   const lines = [
     `Depart ${travelCommand(plan.start)} ${coordLabel(plan.start)}`,
@@ -259,13 +270,15 @@ export function exportRouteText(plan) {
   ];
 
   for (const step of plan.route) {
-    lines.push(`${step.index}. ${travelCommand(step)} - ${step.name} ${coordLabel(step)}`);
-    if (step.travel.mode === 'zaap') {
-      lines.push(
-        `   Rapide: ${travelCommand(step.travel.originZaap)} -> ${travelCommand(step.travel.targetZaap)} -> ${travelCommand(step)}`
-      );
-    } else {
-      lines.push(`   Marche: ${travelCommand(step.travel.from)} -> ${travelCommand(step)}`);
+    lines.push(`${step.index}. ${step.name} ${coordLabel(step)}`);
+    for (const action of getRouteActionLines(step)) {
+      if (action.type === 'zaap') {
+        lines.push(`   Zaap: ${action.label} ${coordLabel(action.point)}`);
+      } else if (action.type === 'transport') {
+        lines.push(`   Transport: ${action.label} ${coordLabel(action.point)}`);
+      } else {
+        lines.push(`   ${travelCommand(action.point)}`);
+      }
     }
     lines.push(`   Recolte: ${summarizeStepResources(step)}`);
   }

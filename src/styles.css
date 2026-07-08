@@ -617,6 +617,32 @@ p {
   min-height: 560px;
   display: block;
   touch-action: none;
+  cursor: grab;
+  user-select: none;
+}
+
+.map-svg.is-panning {
+  cursor: grabbing;
+}
+
+.dofusdb-tile {
+  opacity: 0.92;
+  pointer-events: none;
+}
+
+.map-svg.has-raster .map-cell-base {
+  fill: rgba(255, 255, 255, 0.012);
+  stroke: rgba(255, 255, 255, 0.08);
+}
+
+.map-svg.has-raster .map-cell-harvestable {
+  fill: rgba(244, 211, 111, 0.14);
+  stroke: rgba(255, 236, 169, 0.22);
+}
+
+.map-svg.has-raster .map-cell-route {
+  fill: rgba(216, 106, 88, 0.42);
+  stroke: rgba(255, 245, 220, 0.64);
 }
 
 .grid-line {
@@ -660,6 +686,11 @@ p {
   fill: rgba(117, 129, 120, 0.45);
   stroke: rgba(238, 244, 234, 0.36);
   stroke-width: 1.5;
+}
+
+.spot-resource-icon {
+  pointer-events: none;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.6));
 }
 
 .spot-marker.is-candidate circle {
@@ -929,6 +960,70 @@ p {
   margin: 9px 0 7px;
 }
 
+.run-actions {
+  display: grid;
+  gap: 7px;
+  margin: 10px 0;
+}
+
+.run-action {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: 22px 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid rgba(238, 244, 234, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.run-action.is-command {
+  grid-template-columns: 22px 18px minmax(0, 1fr) auto;
+  border-color: rgba(98, 183, 214, 0.25);
+  background: rgba(98, 183, 214, 0.08);
+}
+
+.run-action-index {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.09);
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 950;
+}
+
+.run-action svg {
+  width: 17px;
+  height: 17px;
+  color: #f0dda9;
+}
+
+.run-action div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.run-action strong {
+  color: var(--text);
+  font-size: 0.74rem;
+  text-transform: uppercase;
+}
+
+.run-action span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #dce7d8;
+  font-size: 0.8rem;
+  font-weight: 760;
+}
+
 .command-pill {
   min-height: 30px;
   display: inline-flex;
@@ -942,6 +1037,43 @@ p {
   font-size: 0.78rem;
   font-weight: 900;
   cursor: copy;
+}
+
+.run-command {
+  min-height: 28px;
+  white-space: nowrap;
+}
+
+.loot-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 8px 0;
+}
+
+.loot-chip {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 8px 3px 4px;
+  border: 1px solid color-mix(in srgb, var(--job-color) 38%, transparent);
+  border-radius: 8px;
+  background: var(--job-soft);
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.loot-chip img {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+}
+
+.loot-chip strong {
+  color: #fff1bd;
+  font-weight: 950;
 }
 
 .command-pill:hover {
@@ -1013,6 +1145,34 @@ p {
 
 .empty-state strong {
   color: var(--text);
+}
+
+.toast-stack {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 50;
+  pointer-events: none;
+}
+
+.toast {
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 14px;
+  border: 1px solid rgba(98, 183, 214, 0.34);
+  border-radius: 8px;
+  background: rgba(13, 18, 17, 0.94);
+  box-shadow: var(--shadow);
+  color: #dff5ff;
+  font-size: 0.86rem;
+  font-weight: 850;
+}
+
+.toast svg {
+  width: 16px;
+  height: 16px;
 }
 
 @media (max-width: 1180px) {
@@ -1133,5 +1293,21 @@ p {
     left: 10px;
     bottom: 10px;
     width: calc(100% - 20px);
+  }
+
+  .run-action,
+  .run-action.is-command {
+    grid-template-columns: 22px 18px minmax(0, 1fr);
+  }
+
+  .run-command {
+    grid-column: 3;
+    justify-self: start;
+    max-width: 100%;
+  }
+
+  .toast-stack {
+    right: 10px;
+    bottom: 10px;
   }
 }

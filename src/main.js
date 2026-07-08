@@ -39,9 +39,9 @@ import {
   exportRouteText,
   formatLegInstruction,
   getDefaultSelection,
+  getRouteActionLines,
   indexById,
   nearestZaap,
-  summarizeStepResources,
   travelCommand
 } from './lib/routePlanner.js';
 import { clearState, loadState, saveState } from './lib/storage.js';
@@ -87,10 +87,34 @@ const DEFAULT_LEVELS = {
 
 const MAP_WIDTH = 1120;
 const MAP_HEIGHT = 760;
+const TILE_SIZE = 250;
+const DOFUSDB_WORLDS = {
+  1: {
+    id: 1,
+    origineX: 6480,
+    origineY: 4944,
+    mapWidth: 69.5,
+    mapHeight: 49.70000076293945,
+    totalWidth: 10000,
+    totalHeight: 8000,
+    scales: [
+      { name: '0.2', x: 0.20000000298023224, y: 0.20000000298023224 },
+      { name: '0.4', x: 0.4000000059604645, y: 0.4000000059604645 },
+      { name: '0.6', x: 0.6000000238418579, y: 0.6000000238418579 },
+      { name: '0.8', x: 0.800000011920929, y: 0.800000011920929 },
+      { name: '1', x: 1, y: 1 }
+    ]
+  }
+};
 
 const app = document.querySelector('#app');
 const initialDataset = DOFUS_DATA;
 let state = createInitialState();
+let mapDrag = null;
+let mapMouseFallbackBound = false;
+let suppressMapClickUntil = 0;
+let toastTimer = null;
+let planningSpotCache = new Map();
 
 function createInitialState() {
   const saved = loadState();
@@ -104,6 +128,8 @@ function createInitialState() {
       : getDefaultSelection(initialDataset.resources, levels, enabledJobs)
   );
 
+  const savedMaxStops = Number(saved?.maxStops || 24);
+
   return {
     dataset: initialDataset,
     levels,
@@ -113,7 +139,7 @@ function createInitialState() {
     priorityMode: saved?.priorityMode || 'auto',
     start: saved?.start || { x: 5, y: -18 },
     worldMap: Number(saved?.worldMap || 1),
-    maxStops: Number(saved?.maxStops || 12),
+    maxStops: savedMaxStops === 12 ? 24 : savedMaxStops,
     preferZaaps: saved?.preferZaaps !== false,
     showZaaps: saved?.showZaaps !== false,
     showGrid: saved?.showGrid !== false,
@@ -164,7 +190,7 @@ function getResourceMap() {
 }
 
 function getCurrentSpots() {
-  return state.dataset.spots.filter((spot) => Number(spot.worldMap || 1) === state.worldMap);
+  return getCurrentPlanningSpots();
 }
 
 function getCurrentZaaps() {
@@ -185,13 +211,74 @@ function getCurrentMapCells() {
   return (state.dataset.maps || []).filter((map) => Number(map.worldMap || 1) === state.worldMap);
 }
 
+function getCurrentSubareaSpots() {
+  return state.dataset.spots.filter((spot) => Number(spot.worldMap || 1) === state.worldMap);
+}
+
+function getCurrentPlanningSpots() {
+  const cacheKey = `${state.dataset.meta?.id || 'custom'}:${state.worldMap}`;
+  if (planningSpotCache.has(cacheKey)) return planningSpotCache.get(cacheKey);
+  const subareaById = new Map(getCurrentSubareaSpots().map((spot) => [spot.subareaId, spot]));
+
+  const spots = getCurrentMapCells()
+    .map((map) => {
+      const subarea = subareaById.get(map.subareaId);
+      if (!subarea) return null;
+      const resources = {};
+
+      for (const [resourceId, density] of Object.entries(subarea.resources || {})) {
+        const quantity = estimateMapResourceQuantity(map, resourceId, density);
+        if (quantity > 0) resources[resourceId] = quantity;
+      }
+
+      if (!Object.keys(resources).length) return null;
+
+      return {
+        id: `map-${map.id}`,
+        source: 'dofusjob-map-estimate',
+        mapId: map.id,
+        subareaId: map.subareaId,
+        name: subarea.name,
+        zone: subarea.zone,
+        worldMap: map.worldMap,
+        worldMapName: subarea.worldMapName,
+        kind: 'map',
+        x: map.x,
+        y: map.y,
+        quality: subarea.quality,
+        mapCount: 1,
+        resources
+      };
+    })
+    .filter(Boolean);
+  planningSpotCache.set(cacheKey, spots);
+  return spots;
+}
+
+function estimateMapResourceQuantity(map, resourceId, density) {
+  const seed = hashString(`${map.id}:${resourceId}`);
+  const base = Math.max(1, Number(density) || 1);
+  const chance = Math.min(88, 24 + base * 7);
+  if (seed % 100 >= chance) return 0;
+  const maxQuantity = Math.max(1, Math.min(4, Math.ceil(base / 3)));
+  return 1 + ((seed >>> 8) % maxQuantity);
+}
+
+function hashString(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
 function getMapPoints() {
   return [
     state.start,
     ...getCurrentMapCells(),
     ...getCurrentZaaps(),
-    ...getCurrentTransporters(),
-    ...getCurrentSpots()
+    ...getCurrentTransporters()
   ];
 }
 
@@ -274,6 +361,7 @@ function render() {
           ${renderRouteSteps()}
         </aside>
       </main>
+      <div class="toast-stack" aria-live="polite"></div>
     </div>
   `;
 
@@ -302,8 +390,8 @@ function renderHeader() {
           <input id="start-y" type="number" value="${state.start.y}" />
         </label>
         <label class="field compact">
-          <span>Stops</span>
-          <input id="max-stops" type="number" min="1" max="30" value="${state.maxStops}" />
+          <span>Maps</span>
+          <input id="max-stops" type="number" min="1" max="60" value="${state.maxStops}" />
         </label>
         <label class="field world-field">
           <span>Carte</span>
@@ -589,11 +677,44 @@ function renderCoordButton(point) {
   `;
 }
 
-function getStepTravelLabel(step) {
-  if (step.travel.mode === 'zaap') {
-    return `via ${step.travel.originZaap.name} -> ${step.travel.targetZaap.name}`;
-  }
-  return 'marche directe';
+function renderStepActions(step) {
+  return getRouteActionLines(step)
+    .map((action, index) => {
+      const isTravel = action.type === 'travel';
+      const icon = action.type === 'zaap' ? 'zap' : action.type === 'transport' ? 'navigation' : 'map-pinned';
+      const label = action.type === 'zaap' ? 'Zaap' : action.type === 'transport' ? 'Transport' : 'Map';
+      return `
+        <div class="run-action ${isTravel ? 'is-command' : ''}">
+          <span class="run-action-index">${index + 1}</span>
+          <i data-lucide="${icon}"></i>
+          <div>
+            <strong>${label}</strong>
+            <span>${escapeHtml(action.label)} ${coordLabel(action.point)}</span>
+          </div>
+          ${isTravel ? renderTravelCommandButton(action.point, 'run-command') : ''}
+        </div>
+      `;
+    })
+    .join('');
+}
+
+function renderStepLoot(step) {
+  return `
+    <div class="loot-list">
+      ${step.selected
+        .map((item) => {
+          const job = JOBS[item.resource.job];
+          return `
+            <span class="loot-chip" style="--job-color:${job.color};--job-soft:${job.softColor}">
+              ${item.resource.icon ? `<img src="${escapeHtml(item.resource.icon)}" alt="" loading="lazy" />` : ''}
+              <span>${escapeHtml(item.resource.name)}</span>
+              <strong>x${item.quantity}</strong>
+            </span>
+          `;
+        })
+        .join('')}
+    </div>
+  `;
 }
 
 function renderStep(step) {
@@ -609,19 +730,26 @@ function renderStep(step) {
           ${renderCoordButton(step)}
         </div>
         <p>${escapeHtml(formatLegInstruction(step))}</p>
-        <div class="step-command-row">
-          ${renderTravelCommandButton(step)}
-          <span class="travel-hint">${escapeHtml(getStepTravelLabel(step))}</span>
-        </div>
-        <div class="step-resources">${escapeHtml(summarizeStepResources(step))}</div>
+        <div class="run-actions">${renderStepActions(step)}</div>
+        ${renderStepLoot(step)}
         <div class="step-metrics">
           <span>${Math.round(step.travel.walkCost)} cases</span>
           <span>${step.travel.zaapCount ? 'zaap' : 'marche'}</span>
           <span>score ${step.value.toFixed(0)}</span>
+          ${step.mapId ? `<span>map ${step.mapId}</span>` : ''}
         </div>
       </div>
     </article>
   `;
+}
+
+function getRenderableSpots(plan) {
+  const routeIds = new Set(plan.route.map((step) => step.id));
+  const route = plan.route;
+  const candidates = plan.candidates
+    .filter((spot) => !routeIds.has(spot.id))
+    .slice(0, 520);
+  return [...route, ...candidates];
 }
 
 function renderMap() {
@@ -632,9 +760,12 @@ function renderMap() {
   const currentMapCells = getCurrentMapCells();
   const currentZaaps = getCurrentZaaps();
   const currentTransporters = getCurrentTransporters();
-  const currentSpots = getCurrentSpots();
+  const currentSpots = getRenderableSpots(plan);
   const { bounds, project, width, height } = getMapProjectionContext();
   const viewBox = getMapViewBox(width, height, project);
+  const visibleBounds = getVisibleDofusBounds(viewBox, bounds, width, height);
+  const rasterTiles = renderDofusDbTiles(visibleBounds, project);
+  const hasRaster = Boolean(rasterTiles);
   const grid = state.showGrid ? renderGrid(bounds, width, height, project) : '';
   const routeSegments = plan.route
     .flatMap((step) =>
@@ -656,7 +787,7 @@ function renderMap() {
 
   return `
     <div class="map-frame">
-      <svg class="map-svg" viewBox="${viewBox}" role="img" aria-label="Carte DofusJob">
+      <svg class="map-svg ${hasRaster ? 'has-raster' : ''}" viewBox="${viewBox}" role="img" aria-label="Carte DofusJob">
         <defs>
           <radialGradient id="waterGlow" cx="50%" cy="45%" r="70%">
             <stop offset="0%" stop-color="#243d46" />
@@ -668,6 +799,7 @@ function renderMap() {
           </filter>
         </defs>
         <rect width="${width}" height="${height}" fill="url(#waterGlow)" />
+        ${rasterTiles}
         ${grid}
         ${mapCells}
         <g class="map-spots">${spots}</g>
@@ -706,6 +838,83 @@ function createProjector(bounds, width, height) {
   });
 }
 
+function renderDofusDbTiles(bounds, project) {
+  const world = DOFUSDB_WORLDS[state.worldMap];
+  if (!world) return '';
+
+  const scale = getDofusDbScale(world);
+  const columns = Math.ceil((world.totalWidth * scale.x) / TILE_SIZE);
+  const rows = Math.ceil((world.totalHeight * scale.y) / TILE_SIZE);
+  const minTileX = clamp(Math.floor(dofusToScaledPixelX(bounds.minX, world, scale) / TILE_SIZE) - 1, 0, columns - 1);
+  const maxTileX = clamp(Math.ceil(dofusToScaledPixelX(bounds.maxX, world, scale) / TILE_SIZE) + 1, 0, columns - 1);
+  const minTileY = clamp(Math.floor(dofusToScaledPixelY(bounds.minY, world, scale) / TILE_SIZE) - 1, 0, rows - 1);
+  const maxTileY = clamp(Math.ceil(dofusToScaledPixelY(bounds.maxY, world, scale) / TILE_SIZE) + 1, 0, rows - 1);
+  const tiles = [];
+
+  for (let tileY = minTileY; tileY <= maxTileY; tileY += 1) {
+    for (let tileX = minTileX; tileX <= maxTileX; tileX += 1) {
+      const tileNumber = tileY * columns + tileX + 1;
+      const topLeft = project(scaledPixelToDofus(tileX * TILE_SIZE, tileY * TILE_SIZE, world, scale));
+      const bottomRight = project(scaledPixelToDofus((tileX + 1) * TILE_SIZE, (tileY + 1) * TILE_SIZE, world, scale));
+      const x = Math.min(topLeft.x, bottomRight.x);
+      const y = Math.min(topLeft.y, bottomRight.y);
+      const width = Math.abs(bottomRight.x - topLeft.x);
+      const height = Math.abs(bottomRight.y - topLeft.y);
+      const href = `https://api.dofusdb.fr/img/worlds/${world.id}/${scale.name}/${tileNumber}.jpg`;
+      tiles.push(`
+        <image class="dofusdb-tile" href="${href}" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${width.toFixed(2)}" height="${height.toFixed(2)}" preserveAspectRatio="none" />
+      `);
+    }
+  }
+
+  return `<g class="dofusdb-tiles">${tiles.join('')}</g>`;
+}
+
+function parseViewBox(value) {
+  const [x, y, width, height] = String(value).split(/\s+/).map(Number);
+  return { x, y, width, height };
+}
+
+function getVisibleDofusBounds(viewBox, bounds, width, height) {
+  const visible = parseViewBox(viewBox);
+  const topLeft = unprojectMapPoint({ x: visible.x, y: visible.y }, bounds, width, height);
+  const bottomRight = unprojectMapPoint(
+    { x: visible.x + visible.width, y: visible.y + visible.height },
+    bounds,
+    width,
+    height
+  );
+  const padding = clamp(34 / clampMapZoom(state.mapZoom), 8, 22);
+
+  return {
+    minX: Math.min(topLeft.x, bottomRight.x) - padding,
+    maxX: Math.max(topLeft.x, bottomRight.x) + padding,
+    minY: Math.min(topLeft.y, bottomRight.y) - padding,
+    maxY: Math.max(topLeft.y, bottomRight.y) + padding
+  };
+}
+
+function getDofusDbScale(world) {
+  const zoom = clampMapZoom(state.mapZoom);
+  const target = zoom >= 3.6 ? 1 : zoom >= 2.6 ? 0.8 : zoom >= 1.8 ? 0.6 : zoom >= 1.2 ? 0.4 : 0.2;
+  return world.scales.find((scale) => scale.name === String(target)) || world.scales[0];
+}
+
+function dofusToScaledPixelX(x, world, scale) {
+  return (world.origineX + Number(x) * world.mapWidth) * scale.x;
+}
+
+function dofusToScaledPixelY(y, world, scale) {
+  return (world.origineY + Number(y) * world.mapHeight) * scale.y;
+}
+
+function scaledPixelToDofus(pixelX, pixelY, world, scale) {
+  return {
+    x: pixelX / scale.x / world.mapWidth - world.origineX / world.mapWidth,
+    y: pixelY / scale.y / world.mapHeight - world.origineY / world.mapHeight
+  };
+}
+
 function unprojectMapPoint(point, bounds, width, height) {
   const padding = 56;
   const rangeX = bounds.maxX - bounds.minX || 1;
@@ -720,11 +929,11 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
-function getMapViewBox(width, height, project) {
-  const zoom = clampMapZoom(state.mapZoom);
+function getMapViewBox(width, height, project, focus = state.mapFocus, zoomValue = state.mapZoom) {
+  const zoom = clampMapZoom(zoomValue);
   const viewWidth = width / zoom;
   const viewHeight = height / zoom;
-  const center = state.mapFocus ? project(state.mapFocus) : { x: width / 2, y: height / 2 };
+  const center = focus ? project(focus) : { x: width / 2, y: height / 2 };
   const maxX = Math.max(0, width - viewWidth);
   const maxY = Math.max(0, height - viewHeight);
   const x = clamp(center.x - viewWidth / 2, 0, maxX);
@@ -738,6 +947,16 @@ function getSvgPoint(event, svg) {
   point.x = event.clientX;
   point.y = event.clientY;
   return point.matrixTransform(svg.getScreenCTM().inverse());
+}
+
+function getMapCenterFromViewBox(svg, bounds, width, height) {
+  const viewBox = svg.viewBox.baseVal;
+  return unprojectMapPoint(
+    { x: viewBox.x + viewBox.width / 2, y: viewBox.y + viewBox.height / 2 },
+    bounds,
+    width,
+    height
+  );
 }
 
 function renderGrid(bounds, width, height, project) {
@@ -901,12 +1120,14 @@ function renderContinents(project) {
 function renderSpotMarker(spot, project, resourceMap, candidateIds, routeIds) {
   const point = project(spot);
   const dominantJob = getDominantJob(spot);
+  const dominantResource = getDominantResource(spot, resourceMap);
   const job = JOBS[dominantJob] || JOBS.miner;
   const isCandidate = candidateIds.has(spot.id);
   const isRoute = routeIds.has(spot.id);
   const isFocused = state.focusedSpotId === spot.id;
   const quantity = Object.values(spot.resources || {}).reduce((sum, value) => sum + Number(value || 0), 0);
   const radius = isRoute ? 11 : isCandidate ? Math.min(10, 5 + quantity / 7) : 4;
+  const iconSize = isRoute ? 20 : 15;
   const className = [
     'spot-marker',
     isCandidate ? 'is-candidate' : 'is-muted',
@@ -918,9 +1139,24 @@ function renderSpotMarker(spot, project, resourceMap, candidateIds, routeIds) {
   return `
     <g class="${className}" data-action="focus-spot" data-spot-id="${spot.id}" transform="translate(${point.x} ${point.y})" style="--job-color:${job.color};--job-soft:${job.softColor}">
       <circle r="${radius}"></circle>
+      ${
+        dominantResource?.icon && (isRoute || isCandidate)
+          ? `<image class="spot-resource-icon" href="${escapeHtml(dominantResource.icon)}" x="${-iconSize / 2}" y="${-iconSize / 2}" width="${iconSize}" height="${iconSize}" />`
+          : ''
+      }
       <title>${escapeHtml(title)}</title>
     </g>
   `;
+}
+
+function getDominantResource(spot, resourceMap) {
+  return Object.entries(spot.resources || {})
+    .map(([resourceId, quantity]) => ({
+      resource: resourceMap.get(resourceId),
+      quantity: Number(quantity || 0)
+    }))
+    .filter((item) => item.resource)
+    .sort((a, b) => b.quantity - a.quantity || b.resource.level - a.resource.level)[0]?.resource;
 }
 
 function renderTravelMarker(node, project) {
@@ -1025,7 +1261,7 @@ function bindEvents() {
     rerender();
   });
   app.querySelector('#max-stops')?.addEventListener('change', (event) => {
-    state.maxStops = Math.min(30, Math.max(1, Number(event.target.value || 12)));
+    state.maxStops = Math.min(60, Math.max(1, Number(event.target.value || 24)));
     rerender();
   });
   app.querySelector('#world-map')?.addEventListener('change', (event) => {
@@ -1082,7 +1318,18 @@ function bindEvents() {
     });
   });
 
-  app.querySelector('.map-svg')?.addEventListener('wheel', handleMapWheel, { passive: false });
+  const mapSvg = app.querySelector('.map-svg');
+  mapSvg?.addEventListener('wheel', handleMapWheel, { passive: false });
+  mapSvg?.addEventListener('pointerdown', handleMapPointerDown);
+  mapSvg?.addEventListener('pointermove', handleMapPointerMove);
+  mapSvg?.addEventListener('pointerup', handleMapPointerUp);
+  mapSvg?.addEventListener('pointercancel', handleMapPointerUp);
+  mapSvg?.addEventListener('mousedown', handleMapPointerDown);
+  if (!mapMouseFallbackBound) {
+    window.addEventListener('mousemove', handleMapPointerMove);
+    window.addEventListener('mouseup', handleMapPointerUp);
+    mapMouseFallbackBound = true;
+  }
 
   app.querySelectorAll('[data-action]').forEach((element) => {
     element.addEventListener('click', handleAction);
@@ -1099,6 +1346,72 @@ function handleMapWheel(event) {
   state.mapFocus = unprojectMapPoint(svgPoint, bounds, width, height);
   state.mapZoom = clampMapZoom(state.mapZoom * factor);
   rerender(true, { preserveScroll: true });
+}
+
+function handleMapPointerDown(event) {
+  if (mapDrag) return;
+  if (event.button !== 0 || state.mapZoom <= 1) return;
+  if (event.target.closest?.('[data-action]')) return;
+
+  event.preventDefault();
+  const svg = event.currentTarget;
+  const { bounds, width, height } = getMapProjectionContext();
+  mapDrag = {
+    pointerId: getDragPointerId(event),
+    svg,
+    startPoint: getSvgPoint(event, svg),
+    startFocus: getMapCenterFromViewBox(svg, bounds, width, height),
+    moved: false
+  };
+  svg.classList.add('is-panning');
+  if (event.pointerId != null) svg.setPointerCapture?.(event.pointerId);
+}
+
+function handleMapPointerMove(event) {
+  if (!isSameMapDrag(event)) return;
+  if (getDragPointerId(event) === 'mouse' && event.buttons === 0) {
+    handleMapPointerUp(event);
+    return;
+  }
+  event.preventDefault();
+
+  const { bounds, project, width, height } = getMapProjectionContext();
+  const currentPoint = getSvgPoint(event, mapDrag.svg);
+  const delta = {
+    x: currentPoint.x - mapDrag.startPoint.x,
+    y: currentPoint.y - mapDrag.startPoint.y
+  };
+  if (Math.abs(delta.x) + Math.abs(delta.y) > 2) mapDrag.moved = true;
+
+  const startCenter = project(mapDrag.startFocus);
+  state.mapFocus = unprojectMapPoint(
+    { x: startCenter.x - delta.x, y: startCenter.y - delta.y },
+    bounds,
+    width,
+    height
+  );
+  mapDrag.svg.setAttribute('viewBox', getMapViewBox(width, height, project));
+}
+
+function handleMapPointerUp(event) {
+  if (!isSameMapDrag(event)) return;
+  const shouldRefreshTiles = mapDrag.moved;
+  if (shouldRefreshTiles) suppressMapClickUntil = Date.now() + 250;
+  mapDrag.svg.classList.remove('is-panning');
+  if (event.pointerId != null) mapDrag.svg.releasePointerCapture?.(event.pointerId);
+  saveState(state);
+  mapDrag = null;
+  if (shouldRefreshTiles) rerender(true, { preserveScroll: true });
+}
+
+function getDragPointerId(event) {
+  return event.pointerId ?? 'mouse';
+}
+
+function isSameMapDrag(event) {
+  if (!mapDrag) return false;
+  const pointerId = getDragPointerId(event);
+  return mapDrag.pointerId === pointerId || pointerId === 'mouse';
 }
 
 function handleAction(event) {
@@ -1201,6 +1514,7 @@ function handleAction(event) {
   }
 
   if (action === 'focus-spot') {
+    if (Date.now() < suppressMapClickUntil) return;
     focusSpot(event.currentTarget.dataset.spotId);
     rerender(true, { preserveScroll: true });
     return;
@@ -1249,6 +1563,7 @@ async function handleDatasetImport(event) {
     const text = await file.text();
     const imported = validateDataset(JSON.parse(text));
     state.dataset = imported;
+    planningSpotCache.clear();
     state.enabledJobs = new Set(JOB_ORDER.filter((jobId) => imported.resources.some((resource) => resource.job === jobId)));
     state.selectedResourceIds = new Set(getDefaultSelection(imported.resources, state.levels, state.enabledJobs));
     state.focusedSpotId = null;
@@ -1316,15 +1631,13 @@ function rerender(clearNotice = true, options = {}) {
 async function copyRoute() {
   const text = exportRouteText(state.plan);
   const copied = await copyText(text, 'dofusjob-route.txt');
-  state.notice = copied ? 'Route copiee avec commandes /travel.' : 'Route telechargee.';
-  rerender(false, { preserveScroll: true });
+  showToast(copied ? 'Route copiee' : 'Route telechargee');
 }
 
 async function copyTravel(command) {
   if (!command) return;
   const copied = await copyText(command, 'dofusjob-travel.txt');
-  state.notice = copied ? `${command} copie.` : 'Commande telechargee.';
-  rerender(false, { preserveScroll: true });
+  showToast(copied ? `${command} copie` : 'Commande telechargee');
 }
 
 async function copyText(text, filename) {
@@ -1346,6 +1659,22 @@ function downloadText(filename, text) {
   link.click();
   link.remove();
   URL.revokeObjectURL(link.href);
+}
+
+function showToast(message) {
+  const host = app.querySelector('.toast-stack');
+  if (!host) return;
+  host.innerHTML = `
+    <div class="toast">
+      <i data-lucide="copy"></i>
+      <span>${escapeHtml(message)}</span>
+    </div>
+  `;
+  createIcons({ icons: ICONS });
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => {
+    host.innerHTML = '';
+  }, 1800);
 }
 
 render();

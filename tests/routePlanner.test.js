@@ -46,8 +46,10 @@ describe('route planner', () => {
   it('uses zaaps when they reduce travel cost', () => {
     const leg = travelBetween({ x: 0, y: 0 }, { x: 50, y: 0 }, zaaps);
     expect(leg.mode).toBe('zaap');
-    expect(leg.cost).toBeLessThan(50);
+    expect(leg.cost).toBe(5);
+    expect(leg.walkCost).toBe(2);
     expect(leg.zaapCount).toBe(1);
+    expect(leg.originZaap).toBeUndefined();
   });
 
   it('keeps direct walking for nearby targets', () => {
@@ -107,5 +109,6 @@ describe('route planner', () => {
     expect(travelCommand({ x: 3, y: -2 })).toBe('/travel 3 -2');
     expect(text).toContain('/travel 0 0');
     expect(text).toContain('/travel 50 0');
+    expect(text).toContain('Zaap: Lointain [48, 0]');
   });
 });
