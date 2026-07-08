@@ -3,6 +3,7 @@ import {
   Check,
   ChevronUp,
   Copy,
+  Crosshair,
   Download,
   Eye,
   EyeOff,
@@ -12,6 +13,7 @@ import {
   Import,
   LocateFixed,
   MapPinned,
+  Maximize2,
   Navigation,
   Pickaxe,
   RefreshCcw,
@@ -24,6 +26,8 @@ import {
   Upload,
   Wheat,
   Zap,
+  ZoomIn,
+  ZoomOut,
   createIcons
 } from 'lucide';
 import { JOB_ORDER, JOBS } from './data/jobs.js';
@@ -37,7 +41,8 @@ import {
   getDefaultSelection,
   indexById,
   nearestZaap,
-  summarizeStepResources
+  summarizeStepResources,
+  travelCommand
 } from './lib/routePlanner.js';
 import { clearState, loadState, saveState } from './lib/storage.js';
 
@@ -45,6 +50,7 @@ const ICONS = {
   Check,
   ChevronUp,
   Copy,
+  Crosshair,
   Download,
   Eye,
   EyeOff,
@@ -54,6 +60,7 @@ const ICONS = {
   Import,
   LocateFixed,
   MapPinned,
+  Maximize2,
   Navigation,
   Pickaxe,
   RefreshCcw,
@@ -65,7 +72,9 @@ const ICONS = {
   TreePine,
   Upload,
   Wheat,
-  Zap
+  Zap,
+  ZoomIn,
+  ZoomOut
 };
 
 const DEFAULT_LEVELS = {
@@ -75,6 +84,9 @@ const DEFAULT_LEVELS = {
   alchemist: 80,
   fisherman: 80
 };
+
+const MAP_WIDTH = 1120;
+const MAP_HEIGHT = 760;
 
 const app = document.querySelector('#app');
 const initialDataset = DOFUS_DATA;
@@ -105,6 +117,8 @@ function createInitialState() {
     preferZaaps: saved?.preferZaaps !== false,
     showZaaps: saved?.showZaaps !== false,
     showGrid: saved?.showGrid !== false,
+    mapZoom: clampMapZoom(saved?.mapZoom || 1),
+    mapFocus: normalizeMapFocus(saved?.mapFocus),
     search: '',
     focusedSpotId: null,
     notice: '',
@@ -123,6 +137,19 @@ function escapeHtml(value) {
     };
     return entities[character];
   });
+}
+
+function clampMapZoom(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 1;
+  return Math.min(5, Math.max(1, numeric));
+}
+
+function normalizeMapFocus(focus) {
+  if (!focus) return null;
+  const x = Number(focus.x);
+  const y = Number(focus.y);
+  return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
 }
 
 function normalize(value) {
@@ -156,6 +183,22 @@ function getCurrentTravelNodes() {
 
 function getCurrentMapCells() {
   return (state.dataset.maps || []).filter((map) => Number(map.worldMap || 1) === state.worldMap);
+}
+
+function getMapPoints() {
+  return [
+    state.start,
+    ...getCurrentMapCells(),
+    ...getCurrentZaaps(),
+    ...getCurrentTransporters(),
+    ...getCurrentSpots()
+  ];
+}
+
+function getMapProjectionContext() {
+  const bounds = getBounds(getMapPoints());
+  const project = createProjector(bounds, MAP_WIDTH, MAP_HEIGHT);
+  return { bounds, project, width: MAP_WIDTH, height: MAP_HEIGHT };
 }
 
 function getResourceStats() {
@@ -391,7 +434,12 @@ function renderResourceRow(resource) {
       </span>
       ${
         state.priorityMode === 'manual' && selected
-          ? `<input class="priority-range" data-resource-id="${resource.id}" type="range" min="1" max="6" value="${priority}" />`
+          ? `
+            <span class="priority-control">
+              <input class="priority-range" data-resource-id="${resource.id}" type="range" min="1" max="6" value="${priority}" />
+              <output class="priority-value">${priority}</output>
+            </span>
+          `
           : `<span class="resource-level">${resource.level}</span>`
       }
     </label>
@@ -419,6 +467,21 @@ function renderToolbar() {
         <span class="map-count">${mapCount} cases · ${transporterCount} transporteurs</span>
       </div>
       <div class="map-actions">
+        <div class="zoom-controls" aria-label="Zoom carte">
+          <button type="button" class="icon-button" data-action="zoom-out" title="Dezoomer">
+            <i data-lucide="zoom-out"></i>
+          </button>
+          <span class="zoom-readout">${Math.round(state.mapZoom * 100)}%</span>
+          <button type="button" class="icon-button" data-action="zoom-in" title="Zoomer">
+            <i data-lucide="zoom-in"></i>
+          </button>
+          <button type="button" class="icon-button" data-action="focus-route" title="Centrer la route">
+            <i data-lucide="crosshair"></i>
+          </button>
+          <button type="button" class="icon-button" data-action="reset-map-view" title="Vue complete">
+            <i data-lucide="maximize-2"></i>
+          </button>
+        </div>
         <input id="dataset-file" class="file-input" type="file" accept="application/json" />
         <label for="dataset-file" class="text-button">
           <i data-lucide="upload"></i>
@@ -507,6 +570,32 @@ function renderRouteSteps() {
   `;
 }
 
+function renderTravelCommandButton(point, className = '') {
+  const command = travelCommand(point);
+  return `
+    <button type="button" class="command-pill ${className}" data-action="copy-travel" data-command="${escapeHtml(command)}" title="Copier ${escapeHtml(command)}">
+      <i data-lucide="copy"></i>
+      <span>${escapeHtml(command)}</span>
+    </button>
+  `;
+}
+
+function renderCoordButton(point) {
+  const command = travelCommand(point);
+  return `
+    <button type="button" class="coord-button" data-action="copy-travel" data-command="${escapeHtml(command)}" title="Copier ${escapeHtml(command)}">
+      ${coordLabel(point)}
+    </button>
+  `;
+}
+
+function getStepTravelLabel(step) {
+  if (step.travel.mode === 'zaap') {
+    return `via ${step.travel.originZaap.name} -> ${step.travel.targetZaap.name}`;
+  }
+  return 'marche directe';
+}
+
 function renderStep(step) {
   const focused = state.focusedSpotId === step.id;
   const dominantJob = getDominantJob(step);
@@ -517,9 +606,13 @@ function renderStep(step) {
       <div class="step-body">
         <div class="step-title">
           <strong>${escapeHtml(step.name)}</strong>
-          <span>${coordLabel(step)}</span>
+          ${renderCoordButton(step)}
         </div>
         <p>${escapeHtml(formatLegInstruction(step))}</p>
+        <div class="step-command-row">
+          ${renderTravelCommandButton(step)}
+          <span class="travel-hint">${escapeHtml(getStepTravelLabel(step))}</span>
+        </div>
         <div class="step-resources">${escapeHtml(summarizeStepResources(step))}</div>
         <div class="step-metrics">
           <span>${Math.round(step.travel.walkCost)} cases</span>
@@ -540,17 +633,8 @@ function renderMap() {
   const currentZaaps = getCurrentZaaps();
   const currentTransporters = getCurrentTransporters();
   const currentSpots = getCurrentSpots();
-  const points = [
-    state.start,
-    ...currentMapCells,
-    ...currentZaaps,
-    ...currentTransporters,
-    ...currentSpots
-  ];
-  const bounds = getBounds(points);
-  const width = 1120;
-  const height = 760;
-  const project = createProjector(bounds, width, height);
+  const { bounds, project, width, height } = getMapProjectionContext();
+  const viewBox = getMapViewBox(width, height, project);
   const grid = state.showGrid ? renderGrid(bounds, width, height, project) : '';
   const routeSegments = plan.route
     .flatMap((step) =>
@@ -572,7 +656,7 @@ function renderMap() {
 
   return `
     <div class="map-frame">
-      <svg class="map-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Carte DofusJob">
+      <svg class="map-svg" viewBox="${viewBox}" role="img" aria-label="Carte DofusJob">
         <defs>
           <radialGradient id="waterGlow" cx="50%" cy="45%" r="70%">
             <stop offset="0%" stop-color="#243d46" />
@@ -620,6 +704,40 @@ function createProjector(bounds, width, height) {
     x: padding + ((Number(point.x) - bounds.minX) / rangeX) * (width - padding * 2),
     y: padding + ((Number(point.y) - bounds.minY) / rangeY) * (height - padding * 2)
   });
+}
+
+function unprojectMapPoint(point, bounds, width, height) {
+  const padding = 56;
+  const rangeX = bounds.maxX - bounds.minX || 1;
+  const rangeY = bounds.maxY - bounds.minY || 1;
+  return {
+    x: bounds.minX + ((point.x - padding) / (width - padding * 2)) * rangeX,
+    y: bounds.minY + ((point.y - padding) / (height - padding * 2)) * rangeY
+  };
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function getMapViewBox(width, height, project) {
+  const zoom = clampMapZoom(state.mapZoom);
+  const viewWidth = width / zoom;
+  const viewHeight = height / zoom;
+  const center = state.mapFocus ? project(state.mapFocus) : { x: width / 2, y: height / 2 };
+  const maxX = Math.max(0, width - viewWidth);
+  const maxY = Math.max(0, height - viewHeight);
+  const x = clamp(center.x - viewWidth / 2, 0, maxX);
+  const y = clamp(center.y - viewHeight / 2, 0, maxY);
+
+  return `${x.toFixed(2)} ${y.toFixed(2)} ${viewWidth.toFixed(2)} ${viewHeight.toFixed(2)}`;
+}
+
+function getSvgPoint(event, svg) {
+  const point = svg.createSVGPoint();
+  point.x = event.clientX;
+  point.y = event.clientY;
+  return point.matrixTransform(svg.getScreenCTM().inverse());
 }
 
 function renderGrid(bounds, width, height, project) {
@@ -829,10 +947,12 @@ function renderRouteSegment(segment, project) {
 
 function renderRoutePin(step, project) {
   const point = project(step);
+  const command = travelCommand(step);
   return `
     <g class="route-pin" data-action="focus-spot" data-spot-id="${step.id}" transform="translate(${point.x} ${point.y})">
       <circle r="15"></circle>
       <text y="5">${step.index}</text>
+      <title>${escapeHtml(command)} - ${escapeHtml(step.name)}</title>
     </g>
   `;
 }
@@ -861,7 +981,7 @@ function renderFocusedSpot() {
         <span class="eyebrow">${escapeHtml(spot.zone || 'Zone')}</span>
         <strong>${escapeHtml(spot.name)}</strong>
       </div>
-      <span>${coordLabel(spot)}</span>
+      ${renderTravelCommandButton(spot, 'popover-command')}
       <div class="spot-resource-list">${resources}</div>
     </div>
   `;
@@ -911,6 +1031,8 @@ function bindEvents() {
   app.querySelector('#world-map')?.addEventListener('change', (event) => {
     state.worldMap = Number(event.target.value || 1);
     state.focusedSpotId = null;
+    state.mapFocus = null;
+    state.mapZoom = 1;
     rerender();
   });
   app.querySelector('#resource-search')?.addEventListener('input', (event) => {
@@ -941,25 +1063,53 @@ function bindEvents() {
       } else {
         state.selectedResourceIds.delete(resourceId);
       }
-      rerender();
+      rerender(true, { preserveScroll: true });
     });
   });
 
   app.querySelectorAll('.priority-range').forEach((input) => {
     input.addEventListener('input', (event) => {
-      state.priorities[event.currentTarget.dataset.resourceId] = Number(event.currentTarget.value);
-      rerender();
+      const value = Number(event.currentTarget.value);
+      state.priorities[event.currentTarget.dataset.resourceId] = value;
+      event.currentTarget
+        .closest('.priority-control')
+        ?.querySelector('.priority-value')
+        ?.replaceChildren(String(value));
+      saveState(state);
+    });
+    input.addEventListener('change', () => {
+      rerender(true, { preserveScroll: true });
     });
   });
+
+  app.querySelector('.map-svg')?.addEventListener('wheel', handleMapWheel, { passive: false });
 
   app.querySelectorAll('[data-action]').forEach((element) => {
     element.addEventListener('click', handleAction);
   });
 }
 
+function handleMapWheel(event) {
+  event.preventDefault();
+  const svg = event.currentTarget;
+  const { bounds, width, height } = getMapProjectionContext();
+  const svgPoint = getSvgPoint(event, svg);
+  const factor = event.deltaY < 0 ? 1.18 : 1 / 1.18;
+
+  state.mapFocus = unprojectMapPoint(svgPoint, bounds, width, height);
+  state.mapZoom = clampMapZoom(state.mapZoom * factor);
+  rerender(true, { preserveScroll: true });
+}
+
 function handleAction(event) {
   const action = event.currentTarget.dataset.action;
   if (!action) return;
+
+  if (action === 'copy-travel') {
+    event.stopPropagation();
+    copyTravel(event.currentTarget.dataset.command);
+    return;
+  }
 
   if (action === 'toggle-job') {
     const jobId = event.currentTarget.dataset.job;
@@ -1025,9 +1175,34 @@ function handleAction(event) {
     return;
   }
 
+  if (action === 'zoom-in') {
+    state.mapZoom = clampMapZoom(state.mapZoom * 1.25);
+    rerender(true, { preserveScroll: true });
+    return;
+  }
+
+  if (action === 'zoom-out') {
+    state.mapZoom = clampMapZoom(state.mapZoom / 1.25);
+    rerender(true, { preserveScroll: true });
+    return;
+  }
+
+  if (action === 'focus-route') {
+    focusRoute();
+    rerender(true, { preserveScroll: true });
+    return;
+  }
+
+  if (action === 'reset-map-view') {
+    state.mapZoom = 1;
+    state.mapFocus = null;
+    rerender(true, { preserveScroll: true });
+    return;
+  }
+
   if (action === 'focus-spot') {
-    state.focusedSpotId = event.currentTarget.dataset.spotId;
-    rerender();
+    focusSpot(event.currentTarget.dataset.spotId);
+    rerender(true, { preserveScroll: true });
     return;
   }
 
@@ -1043,6 +1218,29 @@ function handleAction(event) {
   }
 }
 
+function focusSpot(spotId) {
+  state.focusedSpotId = spotId;
+  const spot = getCurrentSpots().find((item) => item.id === spotId) || state.plan.route.find((item) => item.id === spotId);
+  if (!spot) return;
+  state.mapFocus = { x: Number(spot.x), y: Number(spot.y) };
+  state.mapZoom = Math.max(state.mapZoom, 2.2);
+}
+
+function focusRoute() {
+  const points = [state.start, ...state.plan.route];
+  if (!points.length) return;
+  const center = points.reduce(
+    (sum, point) => ({
+      x: sum.x + Number(point.x) / points.length,
+      y: sum.y + Number(point.y) / points.length
+    }),
+    { x: 0, y: 0 }
+  );
+
+  state.mapFocus = center;
+  state.mapZoom = Math.max(state.mapZoom, 1.55);
+}
+
 async function handleDatasetImport(event) {
   const [file] = event.target.files || [];
   if (!file) return;
@@ -1054,6 +1252,8 @@ async function handleDatasetImport(event) {
     state.enabledJobs = new Set(JOB_ORDER.filter((jobId) => imported.resources.some((resource) => resource.job === jobId)));
     state.selectedResourceIds = new Set(getDefaultSelection(imported.resources, state.levels, state.enabledJobs));
     state.focusedSpotId = null;
+    state.mapFocus = null;
+    state.mapZoom = 1;
     state.notice = `Import charge: ${imported.resources.length} ressources, ${imported.spots.length} spots.`;
   } catch (error) {
     state.notice = error.message || 'Import impossible.';
@@ -1076,21 +1276,65 @@ function pruneUnavailableSelection() {
   }
 }
 
-function rerender(clearNotice = true) {
+function captureScrollSnapshot() {
+  return {
+    windowX: window.scrollX,
+    windowY: window.scrollY,
+    leftPanel: app.querySelector('.panel-left')?.scrollTop || 0,
+    rightPanel: app.querySelector('.panel-right')?.scrollTop || 0,
+    resourceList: app.querySelector('.resource-list')?.scrollTop || 0
+  };
+}
+
+function restoreScrollSnapshot(snapshot) {
+  if (!snapshot) return;
+  const restore = () => {
+    const leftPanel = app.querySelector('.panel-left');
+    const rightPanel = app.querySelector('.panel-right');
+    const resourceList = app.querySelector('.resource-list');
+
+    if (leftPanel) leftPanel.scrollTop = snapshot.leftPanel;
+    if (rightPanel) rightPanel.scrollTop = snapshot.rightPanel;
+    if (resourceList) resourceList.scrollTop = snapshot.resourceList;
+    window.scrollTo(snapshot.windowX, snapshot.windowY);
+  };
+
+  requestAnimationFrame(() => {
+    restore();
+    requestAnimationFrame(restore);
+    window.setTimeout(restore, 80);
+  });
+}
+
+function rerender(clearNotice = true, options = {}) {
+  const scrollSnapshot = options.preserveScroll ? captureScrollSnapshot() : null;
   if (clearNotice) state.notice = '';
   render();
+  restoreScrollSnapshot(scrollSnapshot);
 }
 
 async function copyRoute() {
   const text = exportRouteText(state.plan);
+  const copied = await copyText(text, 'dofusjob-route.txt');
+  state.notice = copied ? 'Route copiee avec commandes /travel.' : 'Route telechargee.';
+  rerender(false, { preserveScroll: true });
+}
+
+async function copyTravel(command) {
+  if (!command) return;
+  const copied = await copyText(command, 'dofusjob-travel.txt');
+  state.notice = copied ? `${command} copie.` : 'Commande telechargee.';
+  rerender(false, { preserveScroll: true });
+}
+
+async function copyText(text, filename) {
   try {
     await navigator.clipboard.writeText(text);
-    state.notice = 'Route copiee.';
+    return true;
   } catch {
-    downloadText('dofusjob-route.txt', text);
-    state.notice = 'Route telechargee.';
+    downloadText(filename, text);
+    return false;
   }
-  rerender(false);
 }
 
 function downloadText(filename, text) {

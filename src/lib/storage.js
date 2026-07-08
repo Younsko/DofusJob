@@ -21,7 +21,9 @@ export function saveState(state) {
     maxStops: state.maxStops,
     preferZaaps: state.preferZaaps,
     showZaaps: state.showZaaps,
-    showGrid: state.showGrid
+    showGrid: state.showGrid,
+    mapZoom: state.mapZoom,
+    mapFocus: state.mapFocus
   };
 
   localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));

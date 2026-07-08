@@ -5,6 +5,10 @@ export function coordLabel(point) {
   return `[${point.x}, ${point.y}]`;
 }
 
+export function travelCommand(point) {
+  return `/travel ${point.x} ${point.y}`;
+}
+
 export function manhattan(a, b) {
   return Math.abs(Number(a.x) - Number(b.x)) + Math.abs(Number(a.y) - Number(b.y));
 }
@@ -249,13 +253,20 @@ export function summarizeStepResources(step) {
 
 export function exportRouteText(plan) {
   const lines = [
-    `Depart ${coordLabel(plan.start)}`,
+    `Depart ${travelCommand(plan.start)} ${coordLabel(plan.start)}`,
     `Score ${plan.totals.value.toFixed(1)} | marche ${plan.totals.walkCost} cases | zaaps ${plan.totals.zaapCount}`,
     ''
   ];
 
   for (const step of plan.route) {
-    lines.push(`${step.index}. ${formatLegInstruction(step)}`);
+    lines.push(`${step.index}. ${travelCommand(step)} - ${step.name} ${coordLabel(step)}`);
+    if (step.travel.mode === 'zaap') {
+      lines.push(
+        `   Rapide: ${travelCommand(step.travel.originZaap)} -> ${travelCommand(step.travel.targetZaap)} -> ${travelCommand(step)}`
+      );
+    } else {
+      lines.push(`   Marche: ${travelCommand(step.travel.from)} -> ${travelCommand(step)}`);
+    }
     lines.push(`   Recolte: ${summarizeStepResources(step)}`);
   }
 

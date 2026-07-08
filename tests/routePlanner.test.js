@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildRoute,
+  exportRouteText,
   getDefaultSelection,
   manhattan,
+  travelCommand,
   travelBetween
 } from '../src/lib/routePlanner.js';
 
@@ -88,5 +90,22 @@ describe('route planner', () => {
     expect(selected).toContain('iron');
     expect(selected).not.toContain('ash');
   });
-});
 
+  it('exports route steps as copy-ready travel commands', () => {
+    const plan = buildRoute({
+      resources,
+      spots,
+      zaaps,
+      selectedResourceIds: ['iron', 'gold', 'ash'],
+      levels: { miner: 200, lumberjack: 200 },
+      start: { x: 0, y: 0 },
+      maxStops: 1
+    });
+
+    const text = exportRouteText(plan);
+
+    expect(travelCommand({ x: 3, y: -2 })).toBe('/travel 3 -2');
+    expect(text).toContain('/travel 0 0');
+    expect(text).toContain('/travel 50 0');
+  });
+});

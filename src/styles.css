@@ -448,7 +448,7 @@ p {
 .resource-row {
   min-height: 62px;
   display: grid;
-  grid-template-columns: 22px 14px minmax(0, 1fr) 78px;
+  grid-template-columns: 22px 14px minmax(0, 1fr) 92px;
   align-items: center;
   gap: 10px;
   padding: 9px 16px;
@@ -528,8 +528,24 @@ p {
 }
 
 .priority-range {
-  width: 76px;
+  width: 68px;
   accent-color: var(--job-color);
+}
+
+.priority-control {
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 92px;
+}
+
+.priority-value {
+  width: 18px;
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-align: right;
 }
 
 .map-workspace {
@@ -550,6 +566,24 @@ p {
   gap: 12px;
   padding: 12px 14px;
   border-bottom: 1px solid var(--border);
+}
+
+.zoom-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.zoom-readout {
+  min-width: 48px;
+  color: #c7f0d2;
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-align: center;
 }
 
 .file-input {
@@ -582,6 +616,7 @@ p {
   height: 100%;
   min-height: 560px;
   display: block;
+  touch-action: none;
 }
 
 .grid-line {
@@ -670,6 +705,7 @@ p {
 .route-line {
   stroke-linecap: round;
   pointer-events: none;
+  vector-effect: non-scaling-stroke;
 }
 
 .route-line-walk {
@@ -729,14 +765,13 @@ p {
   box-shadow: var(--shadow);
 }
 
+.spot-popover .command-pill {
+  align-self: start;
+}
+
 .spot-popover strong {
   display: block;
   margin-top: 3px;
-}
-
-.spot-popover > span {
-  color: var(--muted);
-  font-weight: 800;
 }
 
 .spot-resource-list {
@@ -860,7 +895,7 @@ p {
 
 .step-title {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 10px;
 }
@@ -872,11 +907,58 @@ p {
   white-space: nowrap;
 }
 
-.step-title span {
+.coord-button {
+  border: 0;
+  background: transparent;
   color: var(--muted);
   font-size: 0.8rem;
   font-weight: 800;
   white-space: nowrap;
+  cursor: copy;
+}
+
+.coord-button:hover {
+  color: #f0dda9;
+}
+
+.step-command-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 9px 0 7px;
+}
+
+.command-pill {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid rgba(98, 183, 214, 0.32);
+  border-radius: 7px;
+  background: rgba(98, 183, 214, 0.11);
+  color: #bfeafb;
+  font-size: 0.78rem;
+  font-weight: 900;
+  cursor: copy;
+}
+
+.command-pill:hover {
+  border-color: rgba(98, 183, 214, 0.58);
+  background: rgba(98, 183, 214, 0.18);
+}
+
+.command-pill svg {
+  width: 14px;
+  height: 14px;
+}
+
+.travel-hint {
+  min-width: 0;
+  color: var(--muted-2);
+  font-size: 0.78rem;
+  font-weight: 800;
 }
 
 .step-row p {
@@ -1021,8 +1103,26 @@ p {
   }
 
   .resource-row {
-    grid-template-columns: 22px 12px minmax(0, 1fr) 54px;
+    grid-template-columns: 22px 12px minmax(0, 1fr) 74px;
     padding: 9px 12px;
+  }
+
+  .priority-control {
+    min-width: 74px;
+  }
+
+  .priority-range {
+    width: 50px;
+  }
+
+  .step-title {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .command-pill {
+    max-width: 100%;
   }
 
   .metric-grid {
