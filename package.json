@@ -19,6 +19,7 @@
   "author": "",
   "license": "GPL-3.0-or-later",
   "dependencies": {
+    "leaflet": "^1.9.4",
     "lucide": "^1.23.0"
   },
   "devDependencies": {

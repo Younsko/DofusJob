@@ -22,6 +22,7 @@ export function saveState(state) {
     preferZaaps: state.preferZaaps,
     showZaaps: state.showZaaps,
     showGrid: state.showGrid,
+    mapEngineVersion: 2,
     mapZoom: state.mapZoom,
     mapFocus: state.mapFocus
   };

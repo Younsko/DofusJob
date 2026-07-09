@@ -1,4 +1,6 @@
 import './styles.css';
+import 'leaflet/dist/leaflet.css';
+import L from 'leaflet';
 import {
   Check,
   ChevronUp,
@@ -112,11 +114,9 @@ const DOFUSDB_WORLDS = {
 const app = document.querySelector('#app');
 const initialDataset = DOFUS_DATA;
 let state = createInitialState();
-let mapDrag = null;
-let mapMouseFallbackBound = false;
-let suppressMapClickUntil = 0;
 let toastTimer = null;
 let planningSpotCache = new Map();
+let leafletMap = null;
 
 function createInitialState() {
   const saved = loadState();
@@ -131,6 +131,7 @@ function createInitialState() {
   );
 
   const savedMaxStops = Number(saved?.maxStops || 24);
+  const savedMapIsLeaflet = saved?.mapEngineVersion === 2;
 
   return {
     dataset: initialDataset,
@@ -145,8 +146,8 @@ function createInitialState() {
     preferZaaps: saved?.preferZaaps !== false,
     showZaaps: saved?.showZaaps !== false,
     showGrid: saved?.showGrid !== false,
-    mapZoom: clampMapZoom(saved?.mapZoom || 1),
-    mapFocus: normalizeMapFocus(saved?.mapFocus),
+    mapZoom: clampMapZoom(savedMapIsLeaflet ? saved?.mapZoom || 1.55 : 1.55),
+    mapFocus: savedMapIsLeaflet ? normalizeMapFocus(saved?.mapFocus) : null,
     search: '',
     focusedSpotId: null,
     notice: '',
@@ -378,6 +379,10 @@ function computePlan() {
 }
 
 function render() {
+  if (leafletMap) {
+    leafletMap.remove();
+    leafletMap = null;
+  }
   computePlan();
   saveState(state);
 
@@ -403,6 +408,7 @@ function render() {
   `;
 
   createIcons({ icons: ICONS });
+  mountLeafletMap();
   bindEvents();
 }
 
@@ -790,69 +796,393 @@ function getRenderableSpots(plan) {
 }
 
 function renderMap() {
-  const plan = state.plan;
-  const resourceMap = getResourceMap();
-  const routeIds = new Set(plan.route.map((step) => step.id));
-  const candidateIds = new Set(plan.candidates.map((spot) => spot.id));
-  const currentMapCells = getCurrentMapCells();
-  const currentZaaps = getCurrentZaaps();
-  const currentTransporters = getCurrentTransporters();
-  const currentSpots = getRenderableSpots(plan);
-  const context = getMapProjectionContext();
-  const { bounds, project, projectCenter, width, height } = context;
-  const viewBox = getMapViewBox(width, height, projectCenter);
-  const visiblePixelBounds = getVisiblePixelBounds(viewBox, context);
-  const rasterTiles = renderDofusDbTiles(visiblePixelBounds, context);
-  const hasRaster = Boolean(rasterTiles);
-  const grid = state.showGrid ? renderGrid(bounds, width, height, project) : '';
-  const routeSegments = plan.route
-    .flatMap((step) =>
-      step.travel.segments.map((segment) => renderRouteSegment(segment, projectCenter))
-    )
-    .join('');
-  const routePins = plan.route.map((step) => renderRoutePin(step, projectCenter)).join('');
-  const zaaps = state.showZaaps
-    ? [
-        ...currentZaaps.map((zaap) => renderTravelMarker(zaap, projectCenter)),
-        ...currentTransporters.map((transporter) => renderTravelMarker(transporter, projectCenter))
-      ].join('')
-    : '';
-  const spots = currentSpots
-    .map((spot) => renderSpotMarker(spot, projectCenter, resourceMap, candidateIds, routeIds))
-    .join('');
-  const mapCells = renderMapCells(currentMapCells, project, plan);
-  const start = projectCenter(state.start);
-
   return `
     <div class="map-frame">
-      <svg class="map-svg ${hasRaster ? 'has-raster' : ''}" viewBox="${viewBox}" role="img" aria-label="Carte DofusJob">
-        <defs>
-          <radialGradient id="waterGlow" cx="50%" cy="45%" r="70%">
-            <stop offset="0%" stop-color="#243d46" />
-            <stop offset="58%" stop-color="#16262d" />
-            <stop offset="100%" stop-color="#0d171b" />
-          </radialGradient>
-          <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
-            <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000" flood-opacity="0.28" />
-          </filter>
-        </defs>
-        <rect width="${width}" height="${height}" fill="url(#waterGlow)" />
-        ${rasterTiles}
-        ${grid}
-        ${mapCells}
-        <g class="map-spots">${spots}</g>
-        <g class="map-zaaps">${zaaps}</g>
-        <g class="map-route">${routeSegments}</g>
-        <g class="map-route-pins">${routePins}</g>
-        <g class="start-marker" transform="translate(${start.x} ${start.y})">
-          <circle r="13"></circle>
-          <path d="M0 -7 L6 7 L0 4 L-6 7 Z"></path>
-          <title>Depart ${coordLabel(state.start)}</title>
-        </g>
-      </svg>
+      <div id="dofus-map" class="dofus-leaflet-map" role="img" aria-label="Carte DofusJob"></div>
       ${renderFocusedSpot()}
     </div>
   `;
+}
+
+function mountLeafletMap() {
+  const container = app.querySelector('#dofus-map');
+  const world = DOFUSDB_WORLDS[state.worldMap];
+  if (!container || !world) return;
+
+  const scales = [...world.scales].sort((a, b) => a.x - b.x);
+  const crs = buildLeafletCrs(scales);
+  const worldBounds = L.latLngBounds([0, 0], [world.totalHeight, world.totalWidth]);
+  const canvasRenderer = L.canvas({ padding: 0.5 });
+
+  leafletMap = L.map(container, {
+    crs,
+    minZoom: 0,
+    maxZoom: scales.length - 1,
+    zoomSnap: 0,
+    zoomDelta: 0.35,
+    wheelPxPerZoomLevel: 90,
+    zoomControl: false,
+    attributionControl: false,
+    maxBounds: worldBounds,
+    maxBoundsViscosity: 1,
+    preferCanvas: true,
+    renderer: canvasRenderer,
+    fadeAnimation: false,
+    markerZoomAnimation: false,
+    zoomAnimation: false
+  });
+
+  createLeafletPanes(leafletMap);
+  createLeafletTileLayer(world, scales, worldBounds).addTo(leafletMap);
+  if (state.showGrid) createLeafletGridLayer(world).addTo(leafletMap);
+
+  renderLeafletMapOverlays(world, canvasRenderer);
+
+  const center = getLeafletInitialCenter(world);
+  leafletMap.setView(center, toLeafletZoom(state.mapZoom, scales), { animate: false });
+  leafletMap.on('moveend zoomend', () => syncLeafletMapState(world));
+  requestAnimationFrame(() => leafletMap?.invalidateSize(false));
+}
+
+function buildLeafletCrs(scales) {
+  return L.extend({}, L.CRS.Simple, {
+    latLngToPoint(latLng, zoom) {
+      const scale = getInterpolatedLeafletScale(scales, zoom);
+      return L.point(latLng.lng * scale.x, latLng.lat * scale.y);
+    },
+    pointToLatLng(point, zoom) {
+      const scale = getInterpolatedLeafletScale(scales, zoom);
+      return L.latLng(point.y / scale.y, point.x / scale.x);
+    },
+    scale(zoom) {
+      return getInterpolatedLeafletScale(scales, zoom).x;
+    },
+    zoom(scaleValue) {
+      if (scaleValue <= scales[0].x) return 0;
+      if (scaleValue >= scales[scales.length - 1].x) return scales.length - 1;
+
+      for (let index = 0; index < scales.length - 1; index += 1) {
+        const current = scales[index].x;
+        const next = scales[index + 1].x;
+        if (scaleValue >= current && scaleValue <= next) {
+          return index + (scaleValue - current) / (next - current);
+        }
+      }
+
+      return scales.length - 1;
+    }
+  });
+}
+
+function getInterpolatedLeafletScale(scales, zoom) {
+  const clampedZoom = clamp(Number(zoom) || 0, 0, scales.length - 1);
+  const floor = Math.floor(clampedZoom);
+  const ratio = clampedZoom - floor;
+  const current = scales[Math.max(0, Math.min(floor, scales.length - 1))];
+  const next = scales[Math.max(0, Math.min(floor + 1, scales.length - 1))];
+
+  return {
+    x: current.x + (next.x - current.x) * ratio,
+    y: current.y + (next.y - current.y) * ratio,
+    name: current.name
+  };
+}
+
+function createLeafletTileLayer(world, scales, worldBounds) {
+  const tileLayer = L.tileLayer('', {
+    tileSize: TILE_SIZE,
+    noWrap: true,
+    bounds: worldBounds,
+    minZoom: 0,
+    maxZoom: scales.length - 1,
+    keepBuffer: 3,
+    updateWhenZooming: false,
+    updateWhenIdle: true
+  });
+
+  tileLayer.getTileUrl = (coords) => {
+    const scale = scales[clamp(Math.round(coords.z), 0, scales.length - 1)];
+    const columns = Math.ceil((world.totalWidth * scale.x) / TILE_SIZE);
+    const rows = Math.ceil((world.totalHeight * scale.y) / TILE_SIZE);
+    if (coords.x < 0 || coords.x >= columns || coords.y < 0 || coords.y >= rows) return '';
+    const tileNumber = coords.y * columns + coords.x + 1;
+    return `https://api.dofusdb.fr/img/worlds/${world.id}/${scale.name}/${tileNumber}.jpg`;
+  };
+
+  return tileLayer;
+}
+
+function createLeafletPanes(map) {
+  const panes = [
+    ['dofus-cells', 420],
+    ['dofus-route', 470],
+    ['dofus-markers', 520]
+  ];
+
+  for (const [name, zIndex] of panes) {
+    const pane = map.createPane(name);
+    pane.style.zIndex = zIndex;
+  }
+}
+
+function createLeafletGridLayer(world) {
+  const tileSize = 256;
+  const GridLayer = L.GridLayer.extend({
+    createTile(coords) {
+      const tile = document.createElement('canvas');
+      tile.width = tileSize;
+      tile.height = tileSize;
+
+      const context = tile.getContext('2d');
+      const map = this._map;
+      const origin = coords.scaleBy(L.point(tileSize, tileSize));
+      const end = origin.add([tileSize, tileSize]);
+      const topLeft = map.unproject(origin, coords.z);
+      const bottomRight = map.unproject(end, coords.z);
+      const minLng = topLeft.lng;
+      const minLat = topLeft.lat;
+      const maxLng = bottomRight.lng;
+      const maxLat = bottomRight.lat;
+      const width = maxLng - minLng || 1;
+      const height = maxLat - minLat || 1;
+      const firstX = Math.floor((minLng - world.origineX) / world.mapWidth) * world.mapWidth + world.origineX;
+      const firstY = Math.floor((minLat - world.origineY) / world.mapHeight) * world.mapHeight + world.origineY;
+
+      context.strokeStyle = 'rgba(238, 244, 234, 0.24)';
+      context.lineWidth = 1;
+      context.beginPath();
+
+      for (let x = firstX; x <= maxLng + world.mapWidth; x += world.mapWidth) {
+        const tileX = ((x - minLng) / width) * tileSize;
+        context.moveTo(tileX, 0);
+        context.lineTo(tileX, tileSize);
+      }
+
+      for (let y = firstY; y <= maxLat + world.mapHeight; y += world.mapHeight) {
+        const tileY = ((y - minLat) / height) * tileSize;
+        context.moveTo(0, tileY);
+        context.lineTo(tileSize, tileY);
+      }
+
+      context.stroke();
+      return tile;
+    }
+  });
+
+  return new GridLayer({ tileSize, opacity: 1, pane: 'overlayPane' });
+}
+
+function renderLeafletMapOverlays(world, renderer) {
+  const resourceMap = getResourceMap();
+  const routeIds = new Set(state.plan.route.map((step) => step.id));
+  const candidateIds = new Set(state.plan.candidates.map((spot) => spot.id));
+
+  renderLeafletCells(world, renderer);
+  renderLeafletRoutes(world, renderer);
+
+  if (state.showZaaps) {
+    for (const zaap of getCurrentZaaps()) addLeafletTravelMarker(zaap, world, false);
+    for (const transporter of getCurrentTransporters()) addLeafletTravelMarker(transporter, world, true);
+  }
+
+  for (const spot of getRenderableSpots(state.plan)) {
+    addLeafletSpotMarker(spot, world, resourceMap, candidateIds, routeIds);
+  }
+
+  addLeafletStartMarker(world);
+}
+
+function renderLeafletCells(world, renderer) {
+  const mapById = new Map(getCurrentMapCells().map((map) => [map.id, map]));
+  const candidateMapIds = new Set(
+    state.plan.candidates
+      .slice(0, 260)
+      .map((spot) => spot.mapId)
+      .filter(Boolean)
+  );
+  const routeMapIds = new Set(state.plan.route.map((spot) => spot.mapId).filter(Boolean));
+
+  for (const mapId of candidateMapIds) {
+    if (routeMapIds.has(mapId)) continue;
+    const map = mapById.get(mapId);
+    if (!map) continue;
+    L.rectangle(dofusCellBounds(map, world), {
+      pane: 'dofus-cells',
+      renderer,
+      interactive: false,
+      color: '#ffe9a6',
+      weight: 1,
+      opacity: 0.2,
+      fillColor: '#f4d36f',
+      fillOpacity: 0.08
+    }).addTo(leafletMap);
+  }
+
+  for (const mapId of routeMapIds) {
+    const map = mapById.get(mapId);
+    if (!map) continue;
+    L.rectangle(dofusCellBounds(map, world), {
+      pane: 'dofus-route',
+      renderer,
+      interactive: false,
+      color: '#fff4d5',
+      weight: 2,
+      opacity: 0.92,
+      fillColor: '#d86a58',
+      fillOpacity: 0.42
+    }).addTo(leafletMap);
+  }
+}
+
+function renderLeafletRoutes(world, renderer) {
+  for (const step of state.plan.route) {
+    for (const segment of step.travel.segments) {
+      L.polyline([dofusToLatLng(segment.from, world), dofusToLatLng(segment.to, world)], {
+        pane: 'dofus-route',
+        renderer,
+        interactive: false,
+        color: segment.mode === 'zaap' ? '#65c5e4' : '#f4d36f',
+        weight: 4,
+        opacity: 0.86,
+        dashArray: segment.mode === 'zaap' ? '10 10' : null
+      }).addTo(leafletMap);
+    }
+  }
+}
+
+function addLeafletSpotMarker(spot, world, resourceMap, candidateIds, routeIds) {
+  const isRoute = routeIds.has(spot.id);
+  const isCandidate = candidateIds.has(spot.id);
+  const isFocused = state.focusedSpotId === spot.id;
+  const dominantJob = getDominantJob(spot);
+  const job = JOBS[dominantJob] || JOBS.miner;
+  const dominantResource = getDominantResource(spot, resourceMap);
+  const icon = isRoute
+    ? createRouteDivIcon(spot, dominantResource)
+    : createCandidateDivIcon(job, isFocused);
+  const marker = L.marker(dofusToLatLng(spot, world), {
+    pane: 'dofus-markers',
+    icon,
+    title: getSpotTitle(spot, resourceMap),
+    keyboard: false,
+    riseOnHover: true
+  });
+
+  marker.on('click', () => {
+    focusSpot(spot.id);
+    rerender(true, { preserveScroll: true });
+  });
+  marker.addTo(leafletMap);
+}
+
+function addLeafletTravelMarker(node, world, isTransporter) {
+  L.marker(dofusToLatLng(node, world), {
+    pane: 'dofus-markers',
+    icon: L.divIcon({
+      className: '',
+      html: `<div class="dj-travel-marker ${isTransporter ? 'is-transporter' : 'is-zaap'}"></div>`,
+      iconSize: [24, 24],
+      iconAnchor: [12, 12]
+    }),
+    title: `${node.name} ${coordLabel(node)}`,
+    keyboard: false
+  }).addTo(leafletMap);
+}
+
+function addLeafletStartMarker(world) {
+  L.marker(dofusToLatLng(state.start, world), {
+    pane: 'dofus-markers',
+    icon: L.divIcon({
+      className: '',
+      html: '<div class="dj-start-marker"></div>',
+      iconSize: [28, 28],
+      iconAnchor: [14, 14]
+    }),
+    title: `Depart ${coordLabel(state.start)}`,
+    keyboard: false
+  }).addTo(leafletMap);
+}
+
+function createRouteDivIcon(spot, resource) {
+  const image = resource?.icon
+    ? `<img src="${escapeHtml(resource.icon)}" alt="" loading="lazy" />`
+    : '';
+  return L.divIcon({
+    className: '',
+    html: `<div class="dj-route-marker ${state.focusedSpotId === spot.id ? 'is-focused' : ''}">
+      ${image}
+      <span>${spot.index}</span>
+    </div>`,
+    iconSize: [34, 34],
+    iconAnchor: [17, 17]
+  });
+}
+
+function createCandidateDivIcon(job, isFocused) {
+  return L.divIcon({
+    className: '',
+    html: `<div class="dj-candidate-marker ${isFocused ? 'is-focused' : ''}" style="--job-color:${job.color}"></div>`,
+    iconSize: [14, 14],
+    iconAnchor: [7, 7]
+  });
+}
+
+function getLeafletInitialCenter(world) {
+  if (state.mapFocus) return dofusToLatLng(state.mapFocus, world);
+  if (state.plan.route.length) {
+    const points = [state.start, ...state.plan.route];
+    const center = points.reduce(
+      (sum, point) => ({
+        x: sum.x + Number(point.x) / points.length,
+        y: sum.y + Number(point.y) / points.length
+      }),
+      { x: 0, y: 0 }
+    );
+    return dofusToLatLng(center, world);
+  }
+  return dofusToLatLng(state.start, world);
+}
+
+function syncLeafletMapState(world) {
+  if (!leafletMap) return;
+  state.mapFocus = latLngToDofusCenter(leafletMap.getCenter(), world);
+  state.mapZoom = clampMapZoom(leafletMap.getZoom() + 1);
+  app.querySelector('.zoom-readout')?.replaceChildren(`${Math.round(state.mapZoom * 100)}%`);
+  saveState(state);
+}
+
+function setLeafletViewFromState() {
+  const world = DOFUSDB_WORLDS[state.worldMap];
+  if (!leafletMap || !world) return false;
+  const scales = [...world.scales].sort((a, b) => a.x - b.x);
+  const center = getLeafletInitialCenter(world);
+  leafletMap.setView(center, toLeafletZoom(state.mapZoom, scales), { animate: false });
+  syncLeafletMapState(world);
+  return true;
+}
+
+function toLeafletZoom(mapZoom, scales) {
+  return clamp(clampMapZoom(mapZoom) - 1, 0, scales.length - 1);
+}
+
+function dofusToLatLng(point, world) {
+  return L.latLng(
+    world.origineY + (Number(point.y) + 0.5) * world.mapHeight,
+    world.origineX + (Number(point.x) + 0.5) * world.mapWidth
+  );
+}
+
+function dofusCellBounds(point, world) {
+  const x = world.origineX + Number(point.x) * world.mapWidth;
+  const y = world.origineY + Number(point.y) * world.mapHeight;
+  return L.latLngBounds([y, x], [y + world.mapHeight, x + world.mapWidth]);
+}
+
+function latLngToDofusCenter(latLng, world) {
+  return {
+    x: (Number(latLng.lng) - world.origineX) / world.mapWidth - 0.5,
+    y: (Number(latLng.lat) - world.origineY) / world.mapHeight - 0.5
+  };
 }
 
 function getBounds(points) {
@@ -1041,34 +1371,6 @@ function unprojectMapPoint(point, bounds, width, height) {
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
-}
-
-function getMapViewBox(width, height, project, focus = state.mapFocus, zoomValue = state.mapZoom) {
-  const zoom = clampMapZoom(zoomValue);
-  const viewWidth = width / zoom;
-  const viewHeight = height / zoom;
-  const center = focus ? project(focus) : { x: width / 2, y: height / 2 };
-  const maxX = Math.max(0, width - viewWidth);
-  const maxY = Math.max(0, height - viewHeight);
-  const x = clamp(center.x - viewWidth / 2, 0, maxX);
-  const y = clamp(center.y - viewHeight / 2, 0, maxY);
-
-  return `${x.toFixed(2)} ${y.toFixed(2)} ${viewWidth.toFixed(2)} ${viewHeight.toFixed(2)}`;
-}
-
-function getSvgPoint(event, svg) {
-  const point = svg.createSVGPoint();
-  point.x = event.clientX;
-  point.y = event.clientY;
-  return point.matrixTransform(svg.getScreenCTM().inverse());
-}
-
-function getMapCenterFromViewBox(svg, context) {
-  const viewBox = svg.viewBox.baseVal;
-  return context.unprojectCenter({
-    x: viewBox.x + viewBox.width / 2,
-    y: viewBox.y + viewBox.height / 2
-  });
 }
 
 function renderGrid(bounds, width, height, project) {
@@ -1310,7 +1612,8 @@ function renderRoutePin(step, project) {
 }
 
 function renderFocusedSpot() {
-  const spot = getCurrentSpots().find((item) => item.id === state.focusedSpotId) || state.plan.route[0];
+  if (!state.focusedSpotId) return '';
+  const spot = getCurrentSpots().find((item) => item.id === state.focusedSpotId) || state.plan.route.find((item) => item.id === state.focusedSpotId);
   if (!spot) return '';
   const resourceMap = getResourceMap();
   const resources = Object.entries(spot.resources || {})
@@ -1434,95 +1737,9 @@ function bindEvents() {
     });
   });
 
-  const mapSvg = app.querySelector('.map-svg');
-  mapSvg?.addEventListener('wheel', handleMapWheel, { passive: false });
-  mapSvg?.addEventListener('pointerdown', handleMapPointerDown);
-  mapSvg?.addEventListener('pointermove', handleMapPointerMove);
-  mapSvg?.addEventListener('pointerup', handleMapPointerUp);
-  mapSvg?.addEventListener('pointercancel', handleMapPointerUp);
-  mapSvg?.addEventListener('mousedown', handleMapPointerDown);
-  if (!mapMouseFallbackBound) {
-    window.addEventListener('mousemove', handleMapPointerMove);
-    window.addEventListener('mouseup', handleMapPointerUp);
-    mapMouseFallbackBound = true;
-  }
-
   app.querySelectorAll('[data-action]').forEach((element) => {
     element.addEventListener('click', handleAction);
   });
-}
-
-function handleMapWheel(event) {
-  event.preventDefault();
-  const svg = event.currentTarget;
-  const context = getMapProjectionContext();
-  const svgPoint = getSvgPoint(event, svg);
-  const factor = event.deltaY < 0 ? 1.18 : 1 / 1.18;
-
-  state.mapFocus = context.unprojectCenter(svgPoint);
-  state.mapZoom = clampMapZoom(state.mapZoom * factor);
-  rerender(true, { preserveScroll: true });
-}
-
-function handleMapPointerDown(event) {
-  if (mapDrag) return;
-  if (event.button !== 0 || state.mapZoom <= 1) return;
-  if (event.target.closest?.('[data-action]')) return;
-
-  event.preventDefault();
-  const svg = event.currentTarget;
-  const context = getMapProjectionContext();
-  mapDrag = {
-    pointerId: getDragPointerId(event),
-    svg,
-    startPoint: getSvgPoint(event, svg),
-    startFocus: getMapCenterFromViewBox(svg, context),
-    moved: false
-  };
-  svg.classList.add('is-panning');
-  if (event.pointerId != null) svg.setPointerCapture?.(event.pointerId);
-}
-
-function handleMapPointerMove(event) {
-  if (!isSameMapDrag(event)) return;
-  if (getDragPointerId(event) === 'mouse' && event.buttons === 0) {
-    handleMapPointerUp(event);
-    return;
-  }
-  event.preventDefault();
-
-  const { projectCenter, unprojectCenter, width, height } = getMapProjectionContext();
-  const currentPoint = getSvgPoint(event, mapDrag.svg);
-  const delta = {
-    x: currentPoint.x - mapDrag.startPoint.x,
-    y: currentPoint.y - mapDrag.startPoint.y
-  };
-  if (Math.abs(delta.x) + Math.abs(delta.y) > 2) mapDrag.moved = true;
-
-  const startCenter = projectCenter(mapDrag.startFocus);
-  state.mapFocus = unprojectCenter({ x: startCenter.x - delta.x, y: startCenter.y - delta.y });
-  mapDrag.svg.setAttribute('viewBox', getMapViewBox(width, height, projectCenter));
-}
-
-function handleMapPointerUp(event) {
-  if (!isSameMapDrag(event)) return;
-  const shouldRefreshTiles = mapDrag.moved;
-  if (shouldRefreshTiles) suppressMapClickUntil = Date.now() + 250;
-  mapDrag.svg.classList.remove('is-panning');
-  if (event.pointerId != null) mapDrag.svg.releasePointerCapture?.(event.pointerId);
-  saveState(state);
-  mapDrag = null;
-  if (shouldRefreshTiles) rerender(true, { preserveScroll: true });
-}
-
-function getDragPointerId(event) {
-  return event.pointerId ?? 'mouse';
-}
-
-function isSameMapDrag(event) {
-  if (!mapDrag) return false;
-  const pointerId = getDragPointerId(event);
-  return mapDrag.pointerId === pointerId || pointerId === 'mouse';
 }
 
 function handleAction(event) {
@@ -1601,18 +1818,21 @@ function handleAction(event) {
 
   if (action === 'zoom-in') {
     state.mapZoom = clampMapZoom(state.mapZoom * 1.25);
+    if (setLeafletViewFromState()) return;
     rerender(true, { preserveScroll: true });
     return;
   }
 
   if (action === 'zoom-out') {
     state.mapZoom = clampMapZoom(state.mapZoom / 1.25);
+    if (setLeafletViewFromState()) return;
     rerender(true, { preserveScroll: true });
     return;
   }
 
   if (action === 'focus-route') {
     focusRoute();
+    if (setLeafletViewFromState()) return;
     rerender(true, { preserveScroll: true });
     return;
   }
@@ -1620,12 +1840,12 @@ function handleAction(event) {
   if (action === 'reset-map-view') {
     state.mapZoom = 1;
     state.mapFocus = null;
+    if (setLeafletViewFromState()) return;
     rerender(true, { preserveScroll: true });
     return;
   }
 
   if (action === 'focus-spot') {
-    if (Date.now() < suppressMapClickUntil) return;
     focusSpot(event.currentTarget.dataset.spotId);
     rerender(true, { preserveScroll: true });
     return;
