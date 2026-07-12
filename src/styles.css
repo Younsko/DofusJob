@@ -33,6 +33,7 @@ button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px 
 .brand-icon svg { width: 18px; }
 .truth-badge { margin-right: auto; display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: .78rem; }
 .truth-badge span { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 3px rgba(98,183,120,.13); }
+.profile-status { margin-left: auto; color: var(--muted); font-size: .76rem; }
 
 .button { min-height: 36px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); cursor: pointer; font-weight: 700; }
 .button:hover { background: var(--surface-hover); }
@@ -58,6 +59,7 @@ button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px 
 .job-tab:hover { background: var(--surface); color: var(--text); }
 .job-tab.is-active { border-color: var(--gold-dark); background: #332d1a; color: #f0d783; }
 .level-field { margin-top: 12px; display: grid; grid-template-columns: 1fr 76px; align-items: center; gap: 10px; color: var(--muted); font-size: .8rem; }
+.choose-job-hint { margin-top: 11px; padding: 10px; border-left: 3px solid var(--gold); background: #252315; color: #d8c98f; font-size: .75rem; }
 .level-field input, .mini-level, .start-row input { width: 100%; height: 34px; border: 1px solid var(--line); border-radius: 6px; background: #111512; color: var(--text); text-align: center; }
 .mix-jobs { margin-top: 11px; color: var(--muted); font-size: .76rem; }
 .mix-jobs summary { cursor: pointer; }
@@ -110,6 +112,9 @@ button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px 
 .map-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: #161a17; }
 .map-head > div:first-child { display: grid; gap: 3px; }
 .map-head > div:first-child strong { font-size: .95rem; }
+.setup-progress { display: flex; gap: 6px; }
+.setup-progress span { padding: 6px 9px; border: 1px solid var(--line); border-radius: 5px; color: var(--dim); font-size: .65rem; font-weight: 800; }
+.setup-progress span.is-done { border-color: #45664c; background: #1c281f; color: #8fd09e; }
 .eyebrow { color: var(--dim); font-size: .63rem; font-weight: 800; text-transform: uppercase; }
 .map-metrics { display: flex; gap: 7px; }
 .map-metrics span { height: 39px; display: grid; grid-template-columns: 16px auto; align-content: center; gap: 0 6px; padding: 0 9px; border: 1px solid var(--line); border-radius: 6px; background: #1d221e; color: var(--dim); font-size: .59rem; }
@@ -134,6 +139,18 @@ button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px 
 .start-marker span { width: 6px; height: 6px; border-radius: 50%; background: #10262d; }
 
 .run-panel { background: #151916; }
+.onboarding-panel { min-height: 100%; display: grid; place-items: center; align-content: center; gap: 10px; padding: 34px; text-align: center; }
+.onboarding-icon { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 8px; background: var(--gold); color: #17150c; }
+.onboarding-icon svg { width: 24px; }
+.onboarding-panel > strong { font-size: 1rem; }
+.onboarding-panel > p { max-width: 290px; margin: 0 0 8px; color: var(--muted); font-size: .76rem; line-height: 1.5; }
+.onboarding-checks { width: 100%; display: grid; gap: 7px; text-align: left; }
+.onboarding-checks > div { min-height: 42px; display: grid; grid-template-columns: 26px 1fr; align-items: center; gap: 9px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: #1c211d; color: var(--muted); }
+.onboarding-checks > div > span { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; background: #292f2a; font-size: .68rem; }
+.onboarding-checks > div > span svg { width: 14px; }
+.onboarding-checks > div b { font-size: .75rem; }
+.onboarding-checks > div.is-done { border-color: #3e5d45; color: #a8d8b2; }
+.onboarding-checks > div.is-done > span { background: var(--green); color: #122018; }
 .now-card { padding: 14px; border-bottom: 1px solid var(--line); }
 .now-label { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; }
 .now-label span { color: var(--gold); font-size: .66rem; font-weight: 900; text-transform: uppercase; }

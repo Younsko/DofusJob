@@ -80,15 +80,24 @@ const WORLD = {
   totalWidth: 10000,
   totalHeight: 8000,
   scales: [
-    { name: '0.2', x: 0.20000000298023224, y: 0.20000000298023224 },
-    { name: '0.4', x: 0.4000000059604645, y: 0.4000000059604645 },
-    { name: '0.6', x: 0.6000000238418579, y: 0.6000000238418579 },
-    { name: '0.8', x: 0.800000011920929, y: 0.800000011920929 },
-    { name: '1', x: 1, y: 1 }
+    { name: '0.2', x: 0.2, y: 0.2 },
+    { name: '0.4', x: 0.4, y: 0.4 },
+    { name: '0.6', x: 0.6, y: 0.6 },
+    { name: '0.8', x: 0.8, y: 0.8 },
+    { name: '1', x: 1, y: 1 },
+    { name: 'custom2', x: 2.02023381294964, y: 2.0189889169997874 },
+    { name: 'custom3', x: 3.0404676258992804, y: 3.037977833999575 },
+    { name: 'custom4', x: 4.060701438848921, y: 4.056966750999362 },
+    { name: 'custom5', x: 5.080935251798561, y: 5.07595566799915 },
+    { name: 'custom7', x: 7.121402877697841, y: 7.113933501998725 },
+    { name: 'custom9', x: 9.161870503597122, y: 9.1519113359983 },
+    { name: 'custom12', x: 12.222571942446042, y: 12.208878086997661 },
+    { name: 'custom15', x: 15.283273381294963, y: 15.265844837997024 },
+    { name: 'custom17', x: 17.323741007194243, y: 17.3038226719966 }
   ]
 };
 const TILE_SIZE = 250;
-const DEFAULT_LEVELS = Object.fromEntries(JOB_ORDER.map((job) => [job, 80]));
+const DEFAULT_LEVELS = Object.fromEntries(JOB_ORDER.map((job) => [job, 1]));
 const app = document.querySelector('#app');
 const dataset = DOFUS_DATA;
 const resourceMap = new Map(dataset.resources.map((resource) => [String(resource.id), resource]));
@@ -96,16 +105,17 @@ const resourceStats = buildResourceStats();
 
 let map = null;
 let mapOverlay = null;
+let mapGrid = null;
 let state = createState();
 let refreshFrame = null;
 let toastTimer = null;
 
 function createState() {
   const saved = loadState();
-  const primaryJob = JOB_ORDER.includes(saved?.primaryJob) ? saved.primaryJob : 'lumberjack';
+  const primaryJob = JOB_ORDER.includes(saved?.primaryJob) ? saved.primaryJob : null;
   const levels = { ...DEFAULT_LEVELS, ...(saved?.levels || {}) };
-  const enabledJobs = new Set(saved?.enabledJobs || [primaryJob]);
-  enabledJobs.add(primaryJob);
+  const enabledJobs = new Set(saved?.enabledJobs || []);
+  if (primaryJob) enabledJobs.add(primaryJob);
   const selected = (saved?.selectedResourceIds || []).filter((id) => resourceMap.has(String(id)));
   const selectedResourceIds = new Set(
     selected.length ? selected.map(String) : getDefaultSelection(dataset.resources, levels, enabledJobs)
@@ -113,6 +123,7 @@ function createState() {
 
   return {
     levels,
+    profileReady: saved?.profileReady === true && Boolean(primaryJob),
     primaryJob,
     enabledJobs,
     objective: saved?.objective === 'resource' ? 'resource' : 'xp',
@@ -122,7 +133,7 @@ function createState() {
     maxStops: [8, 16, 24].includes(Number(saved?.maxStops)) ? Number(saved.maxStops) : 16,
     preferZaaps: saved?.preferZaaps !== false,
     mapCenter: saved?.mapCenter || null,
-    mapZoom: Number(saved?.mapZoom ?? 1.5),
+    mapZoom: Number(saved?.mapZoom ?? 2),
     resourceSearch: '',
     activeStepIndex: 0,
     plan: null
@@ -167,8 +178,8 @@ function computePlan() {
     resources: dataset.resources,
     spots: currentSpots(),
     zaaps: currentTravelNodes(),
-    selectedResourceIds: [...state.selectedResourceIds],
-    enabledJobs: [...state.enabledJobs],
+    selectedResourceIds: state.profileReady ? [...state.selectedResourceIds] : [],
+    enabledJobs: state.profileReady ? [...state.enabledJobs] : [],
     levels: state.levels,
     objective: state.objective,
     start: state.start,
@@ -186,7 +197,7 @@ function renderShell() {
       <header class="topbar">
         <div class="brand"><span class="brand-icon"><i data-lucide="route"></i></span><strong>DofusJob</strong></div>
         <div class="truth-badge"><span></span> ${currentSpots().length.toLocaleString('fr-FR')} maps de récolte exactes</div>
-        <button class="button button-quiet" type="button" data-action="copy-route"><i data-lucide="clipboard"></i> Copier la boucle</button>
+        ${state.profileReady ? '<button class="button button-quiet" type="button" data-action="copy-route"><i data-lucide="clipboard"></i> Copier la boucle</button>' : '<span class="profile-status">Configure ton profil pour commencer</span>'}
       </header>
       <div class="workspace">
         <aside class="setup-panel" id="setup-panel"></aside>
@@ -217,7 +228,7 @@ function renderSetup(preserveScroll = false) {
   const panel = app.querySelector('#setup-panel');
   if (!panel) return;
   const oldScroll = preserveScroll ? panel.querySelector('.resource-list')?.scrollTop || 0 : 0;
-  const primary = JOBS[state.primaryJob];
+  const primary = state.primaryJob ? JOBS[state.primaryJob] : null;
   const resources = getPickerResources();
   panel.innerHTML = `
     <section class="setup-block">
@@ -228,11 +239,11 @@ function renderSetup(preserveScroll = false) {
           return `<button type="button" class="job-tab ${id === state.primaryJob ? 'is-active' : ''}" data-action="primary-job" data-job="${id}" aria-pressed="${id === state.primaryJob}"><i data-lucide="${iconName(job.icon)}"></i><span>${escapeHtml(job.label)}</span></button>`;
         }).join('')}
       </div>
-      <label class="level-field">
+      ${primary ? `<label class="level-field">
         <span>Niveau ${escapeHtml(primary.label)}</span>
         <input id="primary-level" type="number" min="1" max="200" value="${state.levels[state.primaryJob]}" />
-      </label>
-      <details class="mix-jobs">
+      </label>` : '<div class="choose-job-hint">Choisis le métier que tu veux monter.</div>'}
+      <details class="mix-jobs" ${primary ? '' : 'hidden'}>
         <summary>Mixer d'autres métiers</summary>
         <div class="mix-list">
           ${JOB_ORDER.filter((id) => id !== state.primaryJob).map((id) => `
@@ -261,7 +272,7 @@ function renderSetup(preserveScroll = false) {
         <label>Y <input id="start-y" type="number" value="${state.start.y}" /></label>
       </div>
       <label class="fast-travel"><input id="fast-travel" type="checkbox" ${state.preferZaaps ? 'checked' : ''} /> Utiliser zaaps et transporteurs</label>
-      <button type="button" class="button button-primary button-block" data-action="calculate"><i data-lucide="play"></i> Calculer ma meilleure boucle</button>
+      <button type="button" class="button button-primary button-block" data-action="calculate" ${primary ? '' : 'disabled'}><i data-lucide="play"></i> ${state.profileReady ? 'Recalculer ma boucle' : 'Créer mon itinéraire'}</button>
     </section>
     <footer class="data-credit">Données de récolte issues de DofusDB, sous LPNC-IA 1.0. Cartes et illustrations © Ankama.</footer>
   `;
@@ -310,6 +321,13 @@ function renderResourcePicker(resources) {
 function renderMapHead() {
   const head = app.querySelector('#map-head');
   if (!head) return;
+  if (!state.profileReady) {
+    head.innerHTML = `
+      <div><span class="eyebrow">Préparation</span><strong>Configure ton profil de récolte</strong></div>
+      <div class="setup-progress"><span class="${state.primaryJob ? 'is-done' : ''}">Métier</span><span class="${state.primaryJob ? 'is-done' : ''}">Niveau</span><span class="${state.objective ? 'is-done' : ''}">Objectif</span></div>
+    `;
+    return;
+  }
   const plan = state.plan;
   head.innerHTML = `
     <div><span class="eyebrow">Boucle recommandée</span><strong>${plan.route.length} maps · ${formatNumber(plan.totals.totalXp)} XP</strong></div>
@@ -325,6 +343,23 @@ function renderMapHead() {
 function renderRun() {
   const panel = app.querySelector('#run-panel');
   if (!panel) return;
+  if (!state.profileReady) {
+    panel.innerHTML = `
+      <div class="onboarding-panel">
+        <span class="onboarding-icon"><i data-lucide="route"></i></span>
+        <span class="eyebrow">Avant de partir</span>
+        <strong>Dis-nous ce que tu récoltes.</strong>
+        <p>L'itinéraire ne sera créé qu'après le choix de ton métier, de ton niveau et de ton objectif.</p>
+        <div class="onboarding-checks">
+          <div class="${state.primaryJob ? 'is-done' : ''}"><span>${state.primaryJob ? '<i data-lucide="check"></i>' : '1'}</span><b>${state.primaryJob ? JOBS[state.primaryJob].label : 'Choisis un métier'}</b></div>
+          <div class="${state.primaryJob ? 'is-done' : ''}"><span>${state.primaryJob ? '<i data-lucide="check"></i>' : '2'}</span><b>${state.primaryJob ? `Niveau ${state.levels[state.primaryJob]}` : 'Renseigne ton niveau'}</b></div>
+          <div class="is-done"><span><i data-lucide="check"></i></span><b>${state.objective === 'resource' ? 'Ressource ciblée' : 'XP maximale'}</b></div>
+        </div>
+      </div>
+    `;
+    createIcons({ icons: ICONS });
+    return;
+  }
   const plan = state.plan;
   if (!plan.route.length) {
     panel.innerHTML = `<div class="run-empty"><i data-lucide="locate-fixed"></i><strong>Aucune map rentable trouvée</strong><p>Vérifie le niveau, le métier et la ressource choisie.</p></div>`;
@@ -350,7 +385,6 @@ function renderRun() {
     </section>
   `;
   createIcons({ icons: ICONS });
-  requestAnimationFrame(() => panel.querySelector('.route-step.is-active')?.scrollIntoView({ block: 'nearest' }));
 }
 
 function renderTravelLead(step) {
@@ -381,7 +415,7 @@ function mountMap() {
     minZoom: 0,
     maxZoom: scales.length - 1,
     zoomSnap: 0,
-    zoomDelta: 0.35,
+    zoomDelta: 1,
     wheelPxPerZoomLevel: 90,
     zoomControl: false,
     attributionControl: false,
@@ -393,14 +427,17 @@ function mountMap() {
     fadeAnimation: false
   });
   createTileLayer(scales, bounds).addTo(map);
+  mapGrid = createGridLayer().addTo(map);
   mapOverlay = L.layerGroup().addTo(map);
   const center = state.mapCenter ? dofusToLatLng(state.mapCenter) : dofusToLatLng(state.start);
-  map.setView(center, clamp(state.mapZoom, 0, 4), { animate: false });
+  map.setView(center, clamp(state.mapZoom, 0, scales.length - 1), { animate: false });
   map.on('moveend zoomend', () => {
     state.mapCenter = latLngToDofus(map.getCenter());
     state.mapZoom = map.getZoom();
+    mapGrid?.setOpacity(map.getZoom() >= 2 ? 0.48 : 0);
     saveState(state);
   });
+  mapGrid.setOpacity(map.getZoom() >= 2 ? 0.48 : 0);
   updateMapOverlays();
   requestAnimationFrame(() => {
     map.invalidateSize(false);
@@ -420,10 +457,13 @@ function updateMapOverlays() {
     L.rectangle(dofusCellBounds(spot), { renderer, interactive: false, color: '#ffe29a', weight: 1, opacity: 0.35, fillColor: '#f6cf68', fillOpacity: 0.12 }).addTo(mapOverlay);
   });
 
-  let previous = state.start;
+  let previous = null;
   route.forEach((step, index) => {
     const color = index === state.activeStepIndex ? '#fff2b8' : '#f2c75c';
-    L.polyline([dofusToLatLng(previous), dofusToLatLng(step)], { renderer, interactive: false, color: '#f2c75c', weight: 3, opacity: 0.82 }).addTo(mapOverlay);
+    const lineStart = index === 0 ? state.start : previous;
+    if (step.travel.mode !== 'zaap' && lineStart) {
+      L.polyline([dofusToLatLng(lineStart), dofusToLatLng(step)], { renderer, interactive: false, color: '#f2c75c', weight: 3, opacity: 0.82 }).addTo(mapOverlay);
+    }
     L.rectangle(dofusCellBounds(step), { renderer, interactive: false, color, weight: index === state.activeStepIndex ? 3 : 2, opacity: 0.95, fillColor: index === state.activeStepIndex ? '#e66f51' : '#d9aa3e', fillOpacity: index === state.activeStepIndex ? 0.48 : 0.28 }).addTo(mapOverlay);
     const marker = L.marker(dofusToLatLng(step), { icon: routeIcon(step, index), title: `${index + 1}. ${step.name} ${coordLabel(step)}`, keyboard: false });
     marker.on('click', () => selectStep(index, false));
@@ -431,7 +471,9 @@ function updateMapOverlays() {
     previous = step;
   });
 
-  L.marker(dofusToLatLng(state.start), { icon: startIcon(), title: `Départ ${coordLabel(state.start)}`, keyboard: false }).addTo(mapOverlay);
+  if (route[0]?.travel.mode === 'walk') {
+    L.marker(dofusToLatLng(state.start), { icon: startIcon(), title: `Départ ${coordLabel(state.start)}`, keyboard: false }).addTo(mapOverlay);
+  }
 }
 
 function routeIcon(step, index) {
@@ -449,7 +491,7 @@ function startIcon() {
 }
 
 function createTileLayer(scales, bounds) {
-  const layer = L.tileLayer('', { tileSize: TILE_SIZE, noWrap: true, bounds, minZoom: 0, maxZoom: scales.length - 1, keepBuffer: 2, updateWhenZooming: false, updateWhenIdle: true });
+  const layer = L.tileLayer('', { tileSize: TILE_SIZE, noWrap: true, bounds, minZoom: 0, maxZoom: scales.length - 1, keepBuffer: 4, updateWhenZooming: false, updateWhenIdle: true });
   layer.getTileUrl = (coords) => {
     const scale = scales[clamp(Math.round(coords.z), 0, scales.length - 1)];
     const columns = Math.ceil((WORLD.totalWidth * scale.x) / TILE_SIZE);
@@ -458,6 +500,43 @@ function createTileLayer(scales, bounds) {
     return `https://api.dofusdb.fr/img/worlds/1/${scale.name}/${coords.y * columns + coords.x + 1}.jpg`;
   };
   return layer;
+}
+
+function createGridLayer() {
+  const canvasSize = 256;
+  const GridLayer = L.GridLayer.extend({
+    createTile(coords) {
+      const tile = document.createElement('canvas');
+      tile.width = canvasSize;
+      tile.height = canvasSize;
+      const context = tile.getContext('2d');
+      const origin = coords.scaleBy(L.point(canvasSize, canvasSize));
+      const end = origin.add([canvasSize, canvasSize]);
+      const topLeft = this._map.unproject(origin, coords.z);
+      const bottomRight = this._map.unproject(end, coords.z);
+      const width = bottomRight.lng - topLeft.lng || 1;
+      const height = bottomRight.lat - topLeft.lat || 1;
+      const firstX = Math.floor((topLeft.lng - WORLD.origineX) / WORLD.mapWidth) * WORLD.mapWidth + WORLD.origineX;
+      const firstY = Math.floor((topLeft.lat - WORLD.origineY) / WORLD.mapHeight) * WORLD.mapHeight + WORLD.origineY;
+
+      context.strokeStyle = 'rgba(255, 255, 255, 0.72)';
+      context.lineWidth = 1;
+      context.beginPath();
+      for (let x = firstX; x <= bottomRight.lng + WORLD.mapWidth; x += WORLD.mapWidth) {
+        const tileX = ((x - topLeft.lng) / width) * canvasSize;
+        context.moveTo(tileX, 0);
+        context.lineTo(tileX, canvasSize);
+      }
+      for (let y = firstY; y <= bottomRight.lat + WORLD.mapHeight; y += WORLD.mapHeight) {
+        const tileY = ((y - topLeft.lat) / height) * canvasSize;
+        context.moveTo(0, tileY);
+        context.lineTo(canvasSize, tileY);
+      }
+      context.stroke();
+      return tile;
+    }
+  });
+  return new GridLayer({ tileSize: canvasSize, interactive: false, pane: 'overlayPane' });
 }
 
 function buildCrs(scales) {
@@ -507,15 +586,17 @@ function latLngToDofus(latLng) {
 
 function fitRoute() {
   if (!map || !state.plan.route.length) return;
-  const bounds = L.latLngBounds([state.start, ...state.plan.route].map(dofusToLatLng));
-  map.fitBounds(bounds, { padding: [54, 54], maxZoom: 3.2, animate: false });
+  const points = [...state.plan.route];
+  if (state.plan.route[0]?.travel.mode === 'walk') points.unshift(state.start);
+  const bounds = L.latLngBounds(points.map(dofusToLatLng));
+  map.fitBounds(bounds, { padding: [70, 70], maxZoom: 8, animate: false });
 }
 
 function selectStep(index, pan = true) {
   state.activeStepIndex = clamp(Number(index), 0, state.plan.route.length - 1);
   renderRun();
   updateMapOverlays();
-  if (pan && map) map.setView(dofusToLatLng(state.plan.route[state.activeStepIndex]), Math.max(2.4, map.getZoom()), { animate: false });
+  if (pan && map) map.setView(dofusToLatLng(state.plan.route[state.activeStepIndex]), Math.max(6, map.getZoom()), { animate: false });
 }
 
 function scheduleRefresh({ setup = false, fit = false } = {}) {
@@ -545,7 +626,7 @@ app.addEventListener('click', (event) => {
     state.primaryJob = action.dataset.job;
     state.enabledJobs = new Set([state.primaryJob]);
     state.selectedResourceIds = new Set(getDefaultSelection(dataset.resources, state.levels, state.enabledJobs));
-    scheduleRefresh({ setup: true, fit: true });
+    scheduleRefresh({ setup: true, fit: false });
   } else if (type === 'objective') {
     state.objective = action.dataset.objective;
     if (state.objective === 'resource' && !state.selectedResourceIds.size) state.selectedResourceIds = new Set(getDefaultSelection(dataset.resources, state.levels, state.enabledJobs));
@@ -553,7 +634,11 @@ app.addEventListener('click', (event) => {
   } else if (type === 'stops') {
     state.maxStops = Number(action.dataset.stops);
     scheduleRefresh({ setup: true, fit: true });
-  } else if (type === 'calculate' || type === 'fit-route') {
+  } else if (type === 'calculate') {
+    if (!state.primaryJob) return;
+    state.profileReady = true;
+    scheduleRefresh({ setup: true, fit: true });
+  } else if (type === 'fit-route') {
     scheduleRefresh({ fit: true });
   } else if (type === 'focus-step') {
     selectStep(Number(action.dataset.index));
