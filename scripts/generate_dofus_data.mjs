@@ -7,6 +7,7 @@ const OUTPUT_FILE = path.join(ROOT, 'src', 'generated', 'dofusData.js');
 const RELEASE_TAG = '3.6.6.6';
 const RELEASE_BASE = `https://github.com/dofusdude/dofus3-main/releases/download/${RELEASE_TAG}`;
 const API_BASE = 'https://api.dofusdu.de/dofus3/v1/fr';
+const DOFUSDB_API_BASE = 'https://api.dofusdb.fr';
 
 const FILES = [
   'maps_information.json',
@@ -154,38 +155,30 @@ const resources = gatherSkills.filter((resource) =>
 );
 const resourcesByJob = countBy(resources.map((resource) => resource.job));
 
-const spots = subareasWithMaps
-  .filter((subarea) => subarea.harvestables.length > 0)
-  .filter((subarea) => subarea.center)
-  .map((subarea) => {
-    const quantities = {};
-    const densityBase = Math.max(1, Math.round(Math.sqrt(subarea.mapCount)));
+const exactHarvestMaps = await fetchAllHarvestMaps(resources.map((resource) => resource.ankamaId));
+const subareaById = new Map(subareasWithMaps.map((subarea) => [subarea.id, subarea]));
 
-    for (const resourceId of subarea.harvestables) {
-      const resource = resourceById.get(resourceId);
-      if (!resource) continue;
-      const levelPenalty = Math.max(1, Math.round(resource.level / 55));
-      quantities[String(resourceId)] = Math.max(1, Math.round(densityBase / levelPenalty));
-    }
-
-    return {
-      id: `subarea-${subarea.id}`,
-      source: 'dofusdude-subarea',
-      subareaId: subarea.id,
-      name: subarea.name,
-      zone: subarea.areaName,
-      worldMap: subarea.worldMap,
-      worldMapName: subarea.worldMapName,
-      kind: 'subarea',
-      x: subarea.center.x,
-      y: subarea.center.y,
-      quality: qualityFor(subarea),
-      mapCount: subarea.mapCount,
-      mapIds: subarea.mapIds.slice(0, 160),
-      bounds: subarea.bounds,
-      resources: quantities
-    };
-  });
+const spots = exactHarvestMaps.map((entry) => {
+  const subarea = subareaById.get(entry.subareaId);
+  return {
+    id: `map-${entry.mapId}`,
+    source: 'dofusdb-exact',
+    mapId: entry.mapId,
+    subareaId: entry.subareaId,
+    name: subarea?.name || `Carte ${entry.x},${entry.y}`,
+    zone: subarea?.areaName || 'Zone inconnue',
+    worldMap: entry.worldMap,
+    worldMapName: subarea?.worldMapName || WORLD_MAP_NAMES[entry.worldMap] || `Worldmap ${entry.worldMap}`,
+    kind: 'map',
+    x: entry.x,
+    y: entry.y,
+    quality: 1,
+    mapCount: 1,
+    resources: entry.resources,
+    resourceCells: entry.resourceCells,
+    mapImage: entry.mapImage
+  };
+});
 
 const mapCells = maps
   .filter((map) => map.worldMap > 0)
@@ -221,12 +214,12 @@ const transporters = buildTransporters(mapCells);
 const dataset = {
   meta: {
     id: `dofusdude-${RELEASE_TAG}`,
-    label: `Dofus 3 ${RELEASE_TAG} - donnees officielles communautaires`,
+    label: `Dofus 3 ${RELEASE_TAG} - cartes de recolte exactes`,
     generatedAt: new Date().toISOString(),
-    source: 'Dofusdude dofus3-main release + Dofusdude API resources',
+    source: 'Dofusdude dofus3-main + Dofusdude API + DofusDB recoltables2',
     sourceUrl: `https://github.com/dofusdude/dofus3-main/releases/tag/${RELEASE_TAG}`,
     accuracy:
-      'Coordonnees maps, sous-zones, ressources recoltables et zaaps issus des donnees jeu. Les quantites de nodes par map sont estimees par densite de sous-zone.'
+      'Coordonnees, ressources et quantites de nodes par map issues des donnees jeu. Donnees DofusDB sous LPNC-IA 1.0.'
   },
   jobs: Object.fromEntries(
     Object.entries(JOB_LABELS).map(([id, label]) => [
@@ -274,8 +267,58 @@ await fs.writeFile(
 );
 
 console.log(
-  `Generated ${path.relative(ROOT, OUTPUT_FILE)}: ${resources.length} resources, ${spots.length} spots, ${mapCells.length} map cells, ${dataset.zaaps.length} zaaps.`
+  `Generated ${path.relative(ROOT, OUTPUT_FILE)}: ${resources.length} resources, ${spots.length} exact harvest maps, ${mapCells.length} map cells, ${dataset.zaaps.length} zaaps.`
 );
+
+async function fetchAllHarvestMaps(resourceIds) {
+  const records = new Map();
+  let skip = 0;
+  let total = Infinity;
+
+  while (skip < total) {
+    const params = new URLSearchParams({ $limit: '50', $skip: String(skip) });
+    resourceIds.forEach((id) => params.append('resources[$in][]', String(id)));
+    const response = await fetch(`${DOFUSDB_API_BASE}/recoltables2?${params}`);
+    if (!response.ok) throw new Error(`DofusDB recoltables failed: ${response.status}`);
+    const payload = await response.json();
+    total = Number(payload.total || 0);
+
+    for (const item of payload.data || []) {
+      const pos = item.pos;
+      if (!pos || Number(pos.worldMap) <= 0) continue;
+      const resources = {};
+      const resourceCells = {};
+
+      for (const node of item.quantities || []) {
+        if (!resourceById.has(Number(node.item))) continue;
+        const id = String(node.item);
+        const quantity = Math.max(1, Number(node.quantity) || 1);
+        resources[id] = (resources[id] || 0) + quantity;
+        if (!resourceCells[id]) resourceCells[id] = [];
+        resourceCells[id].push(Number(node.cell));
+      }
+
+      if (!Object.keys(resources).length) continue;
+      records.set(Number(item.id), {
+        mapId: Number(item.id),
+        subareaId: Number(pos.subAreaId),
+        worldMap: Number(pos.worldMap),
+        x: Number(pos.posX),
+        y: Number(pos.posY),
+        resources,
+        resourceCells,
+        mapImage: pos.img?.['0.5'] || pos.img?.['0.25'] || null
+      });
+    }
+
+    skip += (payload.data || []).length;
+    if (!(payload.data || []).length) break;
+    process.stdout.write(`\rDofusDB harvest maps ${Math.min(skip, total)}/${total}`);
+  }
+
+  process.stdout.write('\n');
+  return [...records.values()];
+}
 
 async function downloadIfMissing(url, outputPath) {
   try {

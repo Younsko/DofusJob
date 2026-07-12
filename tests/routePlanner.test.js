@@ -86,6 +86,31 @@ describe('route planner', () => {
     expect(plan.route.map((step) => step.id)).not.toContain('far-rich');
   });
 
+  it('prefers a mixed dense map when its combined XP per minute beats one isolated node', () => {
+    const mixedResources = [
+      { id: 'a', name: 'Bois A', job: 'lumberjack', level: 56 },
+      { id: 'b', name: 'Bois B', job: 'lumberjack', level: 52 },
+      { id: 'c', name: 'Bois C', job: 'lumberjack', level: 48 },
+      { id: 'solo', name: 'Bois seul', job: 'lumberjack', level: 60 }
+    ];
+    const plan = buildRoute({
+      resources: mixedResources,
+      spots: [
+        { id: 'mixed', name: 'Bosquet mixte', x: 2, y: 0, resources: { a: 1, b: 1, c: 1 } },
+        { id: 'solo', name: 'Arbre isolé', x: 2, y: 1, resources: { solo: 1 } }
+      ],
+      zaaps: [],
+      enabledJobs: ['lumberjack'],
+      levels: { lumberjack: 80 },
+      objective: 'xp',
+      start: { x: 0, y: 0 },
+      maxStops: 1
+    });
+
+    expect(plan.route[0].id).toBe('mixed');
+    expect(plan.route[0].totalXp).toBeGreaterThan(40);
+  });
+
   it('selects current tier resources by default', () => {
     const selected = getDefaultSelection(resources, { miner: 180, lumberjack: 1 }, ['miner']);
     expect(selected).toContain('gold');

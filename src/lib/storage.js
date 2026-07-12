@@ -1,4 +1,4 @@
-const STORAGE_KEY = 'dofusjob_state_v1';
+const STORAGE_KEY = 'dofusjob_state_v2';
 
 export function loadState() {
   try {
@@ -10,24 +10,22 @@ export function loadState() {
 }
 
 export function saveState(state) {
-  const snapshot = {
-    levels: state.levels,
-    enabledJobs: [...state.enabledJobs],
-    selectedResourceIds: [...state.selectedResourceIds],
-    priorities: state.priorities,
-    priorityMode: state.priorityMode,
-    start: state.start,
-    worldMap: state.worldMap,
-    maxStops: state.maxStops,
-    preferZaaps: state.preferZaaps,
-    showZaaps: state.showZaaps,
-    showGrid: state.showGrid,
-    mapEngineVersion: 2,
-    mapZoom: state.mapZoom,
-    mapFocus: state.mapFocus
-  };
-
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+  localStorage.setItem(
+    STORAGE_KEY,
+    JSON.stringify({
+      levels: state.levels,
+      enabledJobs: [...state.enabledJobs],
+      primaryJob: state.primaryJob,
+      objective: state.objective,
+      selectedResourceIds: [...state.selectedResourceIds],
+      start: state.start,
+      worldMap: state.worldMap,
+      maxStops: state.maxStops,
+      preferZaaps: state.preferZaaps,
+      mapCenter: state.mapCenter,
+      mapZoom: state.mapZoom
+    })
+  );
 }
 
 export function clearState() {
