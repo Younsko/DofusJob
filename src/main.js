@@ -1,6 +1,7 @@
 import './styles.css';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
+import brandMark from './assets/dofusjob-mark.png';
 import {
   ArrowRight,
   Check,
@@ -129,8 +130,9 @@ function createState() {
     objective: saved?.objective === 'resource' ? 'resource' : 'xp',
     selectedResourceIds,
     start: saved?.start || { x: 5, y: -18 },
+    startMode: saved?.startMode === 'manual' ? 'manual' : 'auto',
     worldMap: 1,
-    maxStops: [8, 16, 24].includes(Number(saved?.maxStops)) ? Number(saved.maxStops) : 16,
+    maxStops: clamp(Number(saved?.maxStops) || 24, 6, 80),
     preferZaaps: saved?.preferZaaps !== false,
     mapCenter: saved?.mapCenter || null,
     mapZoom: Number(saved?.mapZoom ?? 2),
@@ -182,7 +184,7 @@ function computePlan() {
     enabledJobs: state.profileReady ? [...state.enabledJobs] : [],
     levels: state.levels,
     objective: state.objective,
-    start: state.start,
+    start: state.startMode === 'manual' ? state.start : null,
     maxStops: state.maxStops,
     preferZaaps: state.preferZaaps
   });
@@ -195,8 +197,8 @@ function renderShell() {
   app.innerHTML = `
     <div class="app-shell">
       <header class="topbar">
-        <div class="brand"><span class="brand-icon"><i data-lucide="route"></i></span><strong>DofusJob</strong></div>
-        <div class="truth-badge"><span></span> ${currentSpots().length.toLocaleString('fr-FR')} maps de récolte exactes</div>
+        <div class="brand"><img class="brand-icon" src="${brandMark}" alt="" /><span><strong>DofusJob</strong><small>Routes de récolte</small></span></div>
+        <div class="truth-badge"><span></span> ${currentSpots().length.toLocaleString('fr-FR')} maps vérifiées</div>
         ${state.profileReady ? '<button class="button button-quiet" type="button" data-action="copy-route"><i data-lucide="clipboard"></i> Copier la boucle</button>' : '<span class="profile-status">Configure ton profil pour commencer</span>'}
       </header>
       <div class="workspace">
@@ -231,50 +233,63 @@ function renderSetup(preserveScroll = false) {
   const primary = state.primaryJob ? JOBS[state.primaryJob] : null;
   const resources = getPickerResources();
   panel.innerHTML = `
+    <div class="setup-intro">
+      <span class="eyebrow">Prépare ta sortie</span>
+      <strong>Qu’est-ce qu’on monte aujourd’hui ?</strong>
+      <p>Renseigne tes niveaux, DofusJob s’occupe du point de départ et de l’ordre des maps.</p>
+    </div>
     <section class="setup-block">
-      <div class="step-label"><span>1</span> Ton métier</div>
+      <div class="step-label"><span>1</span><div><strong>Tes métiers</strong><small>Choisis le métier principal</small></div></div>
       <div class="job-tabs">
         ${JOB_ORDER.map((id) => {
           const job = JOBS[id];
-          return `<button type="button" class="job-tab ${id === state.primaryJob ? 'is-active' : ''}" data-action="primary-job" data-job="${id}" aria-pressed="${id === state.primaryJob}"><i data-lucide="${iconName(job.icon)}"></i><span>${escapeHtml(job.label)}</span></button>`;
+          return `<button type="button" class="job-tab ${id === state.primaryJob ? 'is-active' : ''}" data-action="primary-job" data-job="${id}" aria-pressed="${id === state.primaryJob}"><span class="job-art"><img src="${escapeHtml(jobResourceIcon(id))}" alt="" /></span><span>${escapeHtml(job.label)}</span></button>`;
         }).join('')}
       </div>
       ${primary ? `<label class="level-field">
-        <span>Niveau ${escapeHtml(primary.label)}</span>
+        <span><b>${escapeHtml(primary.label)}</b><small>Niveau actuel</small></span>
         <input id="primary-level" type="number" min="1" max="200" value="${state.levels[state.primaryJob]}" />
       </label>` : '<div class="choose-job-hint">Choisis le métier que tu veux monter.</div>'}
       <details class="mix-jobs" ${primary ? '' : 'hidden'}>
-        <summary>Mixer d'autres métiers</summary>
+        <summary><span>Mixer d’autres métiers</span><small>Récolter ce qui est rentable sur le passage</small></summary>
         <div class="mix-list">
           ${JOB_ORDER.filter((id) => id !== state.primaryJob).map((id) => `
-            <label><input type="checkbox" data-secondary-job="${id}" ${state.enabledJobs.has(id) ? 'checked' : ''} /> ${escapeHtml(JOBS[id].label)} <input class="mini-level" type="number" min="1" max="200" data-job-level="${id}" value="${state.levels[id]}" /></label>
+            <label><input type="checkbox" data-secondary-job="${id}" ${state.enabledJobs.has(id) ? 'checked' : ''} /><img src="${escapeHtml(jobResourceIcon(id))}" alt="" /><span>${escapeHtml(JOBS[id].label)}</span><input class="mini-level" type="number" min="1" max="200" data-job-level="${id}" value="${state.levels[id]}" aria-label="Niveau ${escapeHtml(JOBS[id].label)}" /></label>
           `).join('')}
         </div>
       </details>
     </section>
     <section class="setup-block objective-block">
-      <div class="step-label"><span>2</span> Ton objectif</div>
+      <div class="step-label"><span>2</span><div><strong>Ta priorité</strong><small>Ce que le calcul doit favoriser</small></div></div>
       <div class="objective-switch">
-        <button type="button" data-action="objective" data-objective="xp" class="${state.objective === 'xp' ? 'is-active' : ''}"><i data-lucide="sparkles"></i><strong>XP maximale</strong><small>Tout ce qui vaut le détour</small></button>
-        <button type="button" data-action="objective" data-objective="resource" class="${state.objective === 'resource' ? 'is-active' : ''}"><i data-lucide="target"></i><strong>Ressource ciblée</strong><small>Quantité avant tout</small></button>
+        <button type="button" data-action="objective" data-objective="xp" class="${state.objective === 'xp' ? 'is-active' : ''}"><i data-lucide="gauge"></i><span><strong>Monter vite</strong><small>Meilleure XP par minute</small></span></button>
+        <button type="button" data-action="objective" data-objective="resource" class="${state.objective === 'resource' ? 'is-active' : ''}"><i data-lucide="target"></i><span><strong>Faire du stock</strong><small>Ressources précises</small></span></button>
       </div>
       ${state.objective === 'xp' ? renderXpExplanation() : renderResourcePicker(resources)}
     </section>
     <section class="setup-block route-options">
-      <div class="step-label"><span>3</span> Ta boucle</div>
-      <div class="option-row">
-        <span>Longueur</span>
-        <div class="compact-segments">${[8, 16, 24].map((value) => `<button type="button" data-action="stops" data-stops="${value}" class="${state.maxStops === value ? 'is-active' : ''}">${value} maps</button>`).join('')}</div>
+      <div class="step-label"><span>3</span><div><strong>Ta sortie</strong><small>Longueur et point de départ</small></div></div>
+      <label class="length-control">
+        <span><b>Nombre maximum de maps</b><output id="route-length-output">${state.maxStops} max</output></span>
+        <input id="route-length" type="range" min="6" max="80" step="1" value="${state.maxStops}" />
+        <small>Le calcul s'arrête plus tôt s'il n'y a plus de map rentable à ton niveau.</small>
+      </label>
+      <div class="start-choice">
+        <span class="option-title">Point de départ</span>
+        <div class="start-segments">
+          <button type="button" data-action="start-mode" data-mode="auto" class="${state.startMode === 'auto' ? 'is-active' : ''}"><i data-lucide="sparkles"></i><span><strong>Le plus rentable</strong><small>Je peux partir de n’importe où</small></span></button>
+          <button type="button" data-action="start-mode" data-mode="manual" class="${state.startMode === 'manual' ? 'is-active' : ''}"><i data-lucide="map-pin"></i><span><strong>Ma position</strong><small>Optimiser depuis une coordonnée</small></span></button>
+        </div>
       </div>
-      <div class="option-row start-row">
-        <span>Départ</span>
+      ${state.startMode === 'manual' ? `<div class="manual-start">
+        <span>Coordonnées actuelles</span>
         <label>X <input id="start-x" type="number" value="${state.start.x}" /></label>
         <label>Y <input id="start-y" type="number" value="${state.start.y}" /></label>
-      </div>
+      </div>` : '<div class="auto-start-note"><i data-lucide="locate-fixed"></i><span>Le premier <code>/travel</code> t’emmènera directement sur la meilleure map.</span></div>'}
       <label class="fast-travel"><input id="fast-travel" type="checkbox" ${state.preferZaaps ? 'checked' : ''} /> Utiliser zaaps et transporteurs</label>
-      <button type="button" class="button button-primary button-block" data-action="calculate" ${primary ? '' : 'disabled'}><i data-lucide="play"></i> ${state.profileReady ? 'Recalculer ma boucle' : 'Créer mon itinéraire'}</button>
+      <button type="button" class="button button-primary button-block" data-action="calculate" ${primary ? '' : 'disabled'}><i data-lucide="play"></i> ${state.profileReady ? 'Mettre la boucle à jour' : 'Calculer ma meilleure boucle'}</button>
     </section>
-    <footer class="data-credit">Données de récolte issues de DofusDB, sous LPNC-IA 1.0. Cartes et illustrations © Ankama.</footer>
+    <footer class="data-credit">Données issues de DofusDB. Utilisation soumise à la LPNC-IA 1.0.<br />Cartes et illustrations © Ankama.</footer>
   `;
   createIcons({ icons: ICONS });
   const list = panel.querySelector('.resource-list');
@@ -285,10 +300,17 @@ function renderXpExplanation() {
   const jobs = [...state.enabledJobs].map((id) => JOBS[id].label).join(' + ');
   return `
     <div class="mode-explanation">
-      <i data-lucide="gauge"></i>
-      <div><strong>Le moteur ramasse les synergies.</strong><p>Une map avec plusieurs ressources rentables passe devant une ressource isolée si elle donne plus d'XP par minute.</p><small>${escapeHtml(jobs)} · jusqu'au niveau renseigné</small></div>
+      <div class="synergy-art">${[...state.enabledJobs].slice(0, 3).map((id) => `<img src="${escapeHtml(jobResourceIcon(id))}" alt="" />`).join('')}</div>
+      <div><strong>Chaque map est évaluée dans son ensemble.</strong><p>Trois ressources intéressantes au même endroit passent devant un node isolé plus haut niveau lorsque la map rapporte davantage.</p><small>${escapeHtml(jobs)} · ressources accessibles à tes niveaux</small></div>
     </div>
   `;
+}
+
+function jobResourceIcon(jobId) {
+  const candidates = dataset.resources
+    .filter((resource) => resource.job === jobId && resource.icon)
+    .sort((a, b) => a.level - b.level || a.name.localeCompare(b.name));
+  return candidates[0]?.icon || '';
 }
 
 function getPickerResources() {
@@ -323,14 +345,14 @@ function renderMapHead() {
   if (!head) return;
   if (!state.profileReady) {
     head.innerHTML = `
-      <div><span class="eyebrow">Préparation</span><strong>Configure ton profil de récolte</strong></div>
-      <div class="setup-progress"><span class="${state.primaryJob ? 'is-done' : ''}">Métier</span><span class="${state.primaryJob ? 'is-done' : ''}">Niveau</span><span class="${state.objective ? 'is-done' : ''}">Objectif</span></div>
+      <div><span class="eyebrow">Monde des Douze</span><strong>Ta route apparaîtra ici</strong></div>
+      <div class="setup-progress"><span class="${state.primaryJob ? 'is-done' : ''}">1. Métier</span><span class="${state.primaryJob ? 'is-done' : ''}">2. Niveau</span><span>3. Calcul</span></div>
     `;
     return;
   }
   const plan = state.plan;
   head.innerHTML = `
-    <div><span class="eyebrow">Boucle recommandée</span><strong>${plan.route.length} maps · ${formatNumber(plan.totals.totalXp)} XP</strong></div>
+    <div><span class="eyebrow">${state.startMode === 'auto' ? 'Départ optimal inclus' : 'Depuis ' + coordLabel(state.start)}</span><strong>${plan.route.length} étape${plan.route.length > 1 ? 's' : ''}${plan.route.length < state.maxStops ? ' rentable' + (plan.route.length > 1 ? 's' : '') + ' disponible' + (plan.route.length > 1 ? 's' : '') : ''} · ${formatNumber(plan.totals.totalXp)} XP estimée</strong></div>
     <div class="map-metrics">
       <span><i data-lucide="gauge"></i><b>${formatNumber(plan.totals.xpPerHour)}</b> XP/h</span>
       <span><i data-lucide="timer"></i><b>${Math.max(1, Math.round(plan.totals.minutes))}</b> min</span>
@@ -346,14 +368,14 @@ function renderRun() {
   if (!state.profileReady) {
     panel.innerHTML = `
       <div class="onboarding-panel">
-        <span class="onboarding-icon"><i data-lucide="route"></i></span>
-        <span class="eyebrow">Avant de partir</span>
-        <strong>Dis-nous ce que tu récoltes.</strong>
-        <p>L'itinéraire ne sera créé qu'après le choix de ton métier, de ton niveau et de ton objectif.</p>
+        <img class="onboarding-mark" src="${brandMark}" alt="" />
+        <span class="eyebrow">Ton compagnon de récolte</span>
+        <strong>Une boucle faite pour ton personnage.</strong>
+        <p>Pas de route générique avant de connaître ton métier. Une fois ton profil prêt, tu obtiens chaque coordonnée, chaque ressource et chaque commande à copier.</p>
         <div class="onboarding-checks">
-          <div class="${state.primaryJob ? 'is-done' : ''}"><span>${state.primaryJob ? '<i data-lucide="check"></i>' : '1'}</span><b>${state.primaryJob ? JOBS[state.primaryJob].label : 'Choisis un métier'}</b></div>
-          <div class="${state.primaryJob ? 'is-done' : ''}"><span>${state.primaryJob ? '<i data-lucide="check"></i>' : '2'}</span><b>${state.primaryJob ? `Niveau ${state.levels[state.primaryJob]}` : 'Renseigne ton niveau'}</b></div>
-          <div class="is-done"><span><i data-lucide="check"></i></span><b>${state.objective === 'resource' ? 'Ressource ciblée' : 'XP maximale'}</b></div>
+          <div class="${state.primaryJob ? 'is-done' : ''}"><span>${state.primaryJob ? '<i data-lucide="check"></i>' : '1'}</span><div><b>${state.primaryJob ? JOBS[state.primaryJob].label : 'Choisis ton métier'}</b><small>${state.primaryJob ? `Niveau ${state.levels[state.primaryJob]}` : 'Le calcul respecte ton niveau'}</small></div></div>
+          <div class="is-done"><span><i data-lucide="check"></i></span><div><b>${state.objective === 'resource' ? 'Faire du stock' : 'Monter vite'}</b><small>${state.objective === 'resource' ? 'Tu choisis les ressources' : 'Synergies entre ressources'}</small></div></div>
+          <div><span>3</span><div><b>Reçois ta feuille de route</b><small>Une commande par map</small></div></div>
         </div>
       </div>
     `;
@@ -388,6 +410,7 @@ function renderRun() {
 }
 
 function renderTravelLead(step) {
+  if (step.travel.mode === 'start') return `<div class="travel-lead is-start"><i data-lucide="sparkles"></i><span><strong>Commence ici</strong> · meilleure entrée calculée</span></div>`;
   if (step.travel.mode !== 'zaap') return `<div class="travel-lead"><i data-lucide="navigation"></i><span>${step.travel.walkCost <= 1 ? 'Passe sur la map voisine' : `${Math.round(step.travel.walkCost)} maps de déplacement`}</span></div>`;
   return `<div class="travel-lead is-zaap"><i data-lucide="zap"></i><span>TP <strong>${escapeHtml(step.travel.targetZaap.name.replace(/^Zaap - /, ''))}</strong> ${coordLabel(step.travel.targetZaap)}</span></div>`;
 }
@@ -429,7 +452,7 @@ function mountMap() {
   createTileLayer(scales, bounds).addTo(map);
   mapGrid = createGridLayer().addTo(map);
   mapOverlay = L.layerGroup().addTo(map);
-  const center = state.mapCenter ? dofusToLatLng(state.mapCenter) : dofusToLatLng(state.start);
+  const center = state.mapCenter ? dofusToLatLng(state.mapCenter) : dofusToLatLng(state.startMode === 'manual' ? state.start : { x: 5, y: -18 });
   map.setView(center, clamp(state.mapZoom, 0, scales.length - 1), { animate: false });
   map.on('moveend zoomend', () => {
     state.mapCenter = latLngToDofus(map.getCenter());
@@ -460,7 +483,7 @@ function updateMapOverlays() {
   let previous = null;
   route.forEach((step, index) => {
     const color = index === state.activeStepIndex ? '#fff2b8' : '#f2c75c';
-    const lineStart = index === 0 ? state.start : previous;
+    const lineStart = index === 0 ? (state.startMode === 'manual' ? state.start : null) : previous;
     if (step.travel.mode !== 'zaap' && lineStart) {
       L.polyline([dofusToLatLng(lineStart), dofusToLatLng(step)], { renderer, interactive: false, color: '#f2c75c', weight: 3, opacity: 0.82 }).addTo(mapOverlay);
     }
@@ -471,18 +494,19 @@ function updateMapOverlays() {
     previous = step;
   });
 
-  if (route[0]?.travel.mode === 'walk') {
+  if (state.startMode === 'manual' && route[0]?.travel.mode === 'walk') {
     L.marker(dofusToLatLng(state.start), { icon: startIcon(), title: `Départ ${coordLabel(state.start)}`, keyboard: false }).addTo(mapOverlay);
   }
 }
 
 function routeIcon(step, index) {
   const image = step.selected[0]?.resource.icon;
+  const compact = state.plan.route.length > 36;
   return L.divIcon({
     className: '',
-    html: `<div class="route-marker ${index === state.activeStepIndex ? 'is-active' : ''}">${image ? `<img src="${escapeHtml(image)}" alt="" />` : ''}<span>${index + 1}</span></div>`,
-    iconSize: [38, 38],
-    iconAnchor: [19, 19]
+    html: `<div class="route-marker ${compact ? 'is-compact' : ''} ${index === state.activeStepIndex ? 'is-active' : ''}">${image ? `<img src="${escapeHtml(image)}" alt="" />` : ''}<span>${index + 1}</span></div>`,
+    iconSize: compact ? [30, 30] : [38, 38],
+    iconAnchor: compact ? [15, 15] : [19, 19]
   });
 }
 
@@ -587,7 +611,7 @@ function latLngToDofus(latLng) {
 function fitRoute() {
   if (!map || !state.plan.route.length) return;
   const points = [...state.plan.route];
-  if (state.plan.route[0]?.travel.mode === 'walk') points.unshift(state.start);
+  if (state.startMode === 'manual' && state.plan.route[0]?.travel.mode === 'walk') points.unshift(state.start);
   const bounds = L.latLngBounds(points.map(dofusToLatLng));
   map.fitBounds(bounds, { padding: [70, 70], maxZoom: 8, animate: false });
 }
@@ -634,6 +658,9 @@ app.addEventListener('click', (event) => {
   } else if (type === 'stops') {
     state.maxStops = Number(action.dataset.stops);
     scheduleRefresh({ setup: true, fit: true });
+  } else if (type === 'start-mode') {
+    state.startMode = action.dataset.mode === 'manual' ? 'manual' : 'auto';
+    scheduleRefresh({ setup: true, fit: true });
   } else if (type === 'calculate') {
     if (!state.primaryJob) return;
     state.profileReady = true;
@@ -679,10 +706,18 @@ app.addEventListener('change', (event) => {
   } else if (target.id === 'fast-travel') {
     state.preferZaaps = target.checked;
     scheduleRefresh({ fit: true });
+  } else if (target.id === 'route-length') {
+    state.maxStops = clamp(Number(target.value), 6, 80);
+    scheduleRefresh({ setup: true, fit: true });
   }
 });
 
 app.addEventListener('input', (event) => {
+  if (event.target.id === 'route-length') {
+    const output = app.querySelector('#route-length-output');
+    if (output) output.textContent = `${event.target.value} max`;
+    return;
+  }
   if (event.target.id !== 'resource-search') return;
   state.resourceSearch = event.target.value;
   const list = app.querySelector('.resource-list');

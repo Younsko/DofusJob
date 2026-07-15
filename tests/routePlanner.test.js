@@ -86,6 +86,23 @@ describe('route planner', () => {
     expect(plan.route.map((step) => step.id)).not.toContain('far-rich');
   });
 
+  it('chooses the most efficient first map when the start is free', () => {
+    const plan = buildRoute({
+      resources,
+      spots,
+      zaaps,
+      selectedResourceIds: ['iron', 'gold', 'ash'],
+      enabledJobs: ['miner', 'lumberjack'],
+      levels: { miner: 200, lumberjack: 200 },
+      start: null,
+      maxStops: 1
+    });
+
+    expect(plan.route[0].id).toBe('far-rich');
+    expect(plan.route[0].travel.mode).toBe('start');
+    expect(plan.route[0].travel.seconds).toBe(0);
+  });
+
   it('prefers a mixed dense map when its combined XP per minute beats one isolated node', () => {
     const mixedResources = [
       { id: 'a', name: 'Bois A', job: 'lumberjack', level: 56 },

@@ -20,6 +20,7 @@ export function saveState(state) {
       objective: state.objective,
       selectedResourceIds: [...state.selectedResourceIds],
       start: state.start,
+      startMode: state.startMode,
       worldMap: state.worldMap,
       maxStops: state.maxStops,
       preferZaaps: state.preferZaaps,

@@ -120,7 +120,7 @@ export function buildRoute({
   enabledJobs = [],
   levels,
   objective = 'xp',
-  start,
+  start = null,
   maxStops = 18,
   preferZaaps = true
 }) {
@@ -139,17 +139,29 @@ export function buildRoute({
 
   const route = [];
   const used = new Set();
-  let current = { ...start, name: 'Départ' };
+  let current = start ? { ...start, name: 'Départ choisi' } : null;
   let totals = { seconds: 0, walkCost: 0, zaapCount: 0, totalXp: 0, rawQuantity: 0 };
 
   while (route.length < maxStops && used.size < candidates.length) {
     const next = candidates
       .filter((spot) => !used.has(spot.id))
       .map((spot) => {
-        const travel = travelBetween(current, spot, zaaps, { preferZaaps });
+        const travel = current
+          ? travelBetween(current, spot, zaaps, { preferZaaps })
+          : {
+              mode: 'start',
+              cost: 0,
+              seconds: 0,
+              walkCost: 0,
+              zaapCount: 0,
+              targetZaap: null,
+              from: null,
+              target: spot,
+              segments: []
+            };
         const seconds = Math.max(1, travel.seconds + spot.harvestSeconds);
         const densityBonus = 1 + Math.min(0.18, Math.max(0, spot.diversity - 1) * 0.04);
-        const continuityBonus = manhattan(current, spot) <= 2 ? 1.16 : 1;
+        const continuityBonus = current && manhattan(current, spot) <= 2 ? 1.16 : 1;
         return {
           spot,
           travel,
@@ -235,7 +247,9 @@ export function exportRouteText(plan) {
   const lines = [
     `DOFUSJOB - ${plan.objective === 'xp' ? 'XP MAX' : 'RESSOURCE CIBLEE'}`,
     `${Math.round(plan.totals.totalXp)} XP - ${plan.totals.rawQuantity} nodes - ${Math.round(plan.totals.minutes)} min`,
-    `Départ: ${travelCommand(plan.start)}`,
+    plan.start
+      ? `Départ choisi: ${travelCommand(plan.start)}`
+      : `Départ optimal: ${plan.route[0] ? travelCommand(plan.route[0]) : 'aucun'}`,
     ''
   ];
 
