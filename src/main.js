@@ -141,6 +141,7 @@ function createState() {
     tutorialSeen: saved?.tutorialSeen === true,
     tutorialStep: 0,
     routeListOpen: false,
+    profileEditing: false,
     resourceSearch: '',
     activeStepIndex: 0,
     plan: null
@@ -203,10 +204,9 @@ function renderShell() {
     <div class="app-shell">
       <header class="topbar">
         <div class="brand"><img class="brand-icon" src="${brandMark}" alt="" /><span><strong>DofusJob</strong><small>Routes de récolte</small></span></div>
-        <div class="truth-badge"><span></span> ${currentSpots().length.toLocaleString('fr-FR')} maps vérifiées</div>
         <div class="topbar-actions" id="topbar-actions"></div>
       </header>
-      <div class="workspace" style="--left-panel:${state.leftPanelWidth}px;--right-panel:${state.rightPanelWidth}px">
+      <div class="workspace ${state.profileReady && !state.profileEditing ? 'is-profile-compact' : ''}" style="--left-panel:${state.leftPanelWidth}px;--right-panel:${state.rightPanelWidth}px">
         <aside class="setup-panel" id="setup-panel"></aside>
         <div class="panel-resizer" data-resizer="left" role="separator" aria-label="Redimensionner les réglages" aria-orientation="vertical" title="Glisser pour redimensionner · double-clic pour réinitialiser"></div>
         <main class="map-panel">
@@ -235,14 +235,15 @@ function renderShell() {
   createIcons({ icons: ICONS });
   mountMap();
   bindPanelResizers();
+  updateWorkspaceMode();
 }
 
 function renderTopbarActions() {
   const actions = app.querySelector('#topbar-actions');
   if (!actions) return;
   actions.innerHTML = `
-    <button class="help-button" type="button" data-action="tutorial" aria-label="Ouvrir le tutoriel"><span>?</span> Aide</button>
-    ${state.profileReady ? '<button class="button button-quiet" type="button" data-action="copy-route"><i data-lucide="clipboard"></i> Copier la boucle</button>' : '<span class="profile-status">Choisis un métier pour commencer</span>'}
+    ${state.profileReady ? `<button class="profile-chip ${state.profileEditing ? 'is-active' : ''}" type="button" data-action="edit-profile" aria-label="Modifier le profil"><img src="${escapeHtml(jobResourceIcon(state.primaryJob))}" alt="" /><span>${escapeHtml(JOBS[state.primaryJob].label)} <b>niv. ${state.levels[state.primaryJob]}</b></span></button>` : ''}
+    <button class="help-button" type="button" data-action="tutorial" aria-label="Ouvrir le tutoriel" title="Aide"><span>?</span></button>
   `;
   createIcons({ icons: ICONS });
 }
@@ -366,11 +367,7 @@ function renderMapHead() {
   const plan = state.plan;
   head.innerHTML = `
     <div><span class="eyebrow">${state.startMode === 'auto' ? 'Départ optimal inclus' : 'Depuis ' + coordLabel(state.start)}</span><strong>${plan.route.length} étape${plan.route.length > 1 ? 's' : ''}${plan.route.length < state.maxStops ? ' rentable' + (plan.route.length > 1 ? 's' : '') + ' disponible' + (plan.route.length > 1 ? 's' : '') : ''} · ${formatNumber(plan.totals.totalXp)} XP estimée</strong></div>
-    <div class="map-metrics">
-      <span><i data-lucide="gauge"></i><b>${formatNumber(plan.totals.xpPerHour)}</b> XP/h</span>
-      <span><i data-lucide="timer"></i><b>${Math.max(1, Math.round(plan.totals.minutes))}</b> min</span>
-      <span><i data-lucide="zap"></i><b>${plan.totals.zaapCount}</b> TP</span>
-    </div>
+    <div class="map-summary"><b>${formatNumber(plan.totals.xpPerHour)} XP/h</b><span>${Math.max(1, Math.round(plan.totals.minutes))} min</span></div>
   `;
   createIcons({ icons: ICONS });
 }
@@ -401,7 +398,7 @@ function renderRun() {
     <section class="now-card">
       <div class="now-label"><span>À faire maintenant</span><b>${state.activeStepIndex + 1}/${plan.route.length}</b></div>
       ${current.mapImage ? `<img class="map-preview" src="${escapeHtml(current.mapImage)}" alt="Aperçu de la map ${coordLabel(current)}" />` : ''}
-      <div class="now-place"><div><strong>${escapeHtml(current.name)}</strong><span>${escapeHtml(current.zone)} ${coordLabel(current)}</span></div><button type="button" data-action="focus-step" data-index="${state.activeStepIndex}" aria-label="Voir sur la carte"><i data-lucide="map-pin"></i></button></div>
+      <div class="now-place"><div><strong>${escapeHtml(current.name)}</strong><span>${escapeHtml(current.zone)} ${coordLabel(current)}</span></div></div>
       ${renderTravelLead(current)}
       <button type="button" class="travel-command" data-copy="${travelCommand(current)}"><code>${travelCommand(current)}</code><span><i data-lucide="copy"></i> Copier</span></button>
       <div class="harvest-box"><span>Sur cette map</span>${renderLoot(current)}</div>
@@ -412,7 +409,7 @@ function renderRun() {
         <button class="route-list-toggle" type="button" data-action="toggle-route-list" aria-expanded="${state.routeListOpen}">
           <i data-lucide="chevron-right"></i><span><strong>${state.routeListOpen ? 'Masquer la boucle' : `Voir les ${plan.route.length} étapes`}</strong><small>Itinéraire map par map</small></span>
         </button>
-        <button type="button" data-action="copy-route" aria-label="Copier la route"><i data-lucide="clipboard"></i></button>
+        ${state.routeListOpen ? '<button type="button" data-action="copy-route" aria-label="Copier la route"><i data-lucide="clipboard"></i></button>' : ''}
       </div>
       ${state.routeListOpen ? `<ol class="route-list">${plan.route.map((step, index) => renderRouteStep(step, index)).join('')}</ol>` : ''}
     </section>
@@ -484,21 +481,16 @@ function updateMapOverlays() {
   mapOverlay.clearLayers();
   const renderer = L.canvas({ padding: 0.35 });
   const route = state.plan.route;
-  const candidateIds = new Set(route.map((step) => step.id));
-
-  state.plan.candidates.slice(0, 24).forEach((spot) => {
-    if (candidateIds.has(spot.id)) return;
-    L.rectangle(dofusCellBounds(spot), { renderer, interactive: false, color: '#ffe29a', weight: 1, opacity: 0.35, fillColor: '#f6cf68', fillOpacity: 0.12 }).addTo(mapOverlay);
-  });
 
   let previous = null;
   route.forEach((step, index) => {
-    const color = index === state.activeStepIndex ? '#fff2b8' : '#f2c75c';
     const lineStart = index === 0 ? (state.startMode === 'manual' ? state.start : null) : previous;
     if (step.travel.mode !== 'zaap' && lineStart) {
       L.polyline([dofusToLatLng(lineStart), dofusToLatLng(step)], { renderer, interactive: false, color: '#f2c75c', weight: 3, opacity: 0.82 }).addTo(mapOverlay);
     }
-    L.rectangle(dofusCellBounds(step), { renderer, interactive: false, color, weight: index === state.activeStepIndex ? 3 : 2, opacity: 0.95, fillColor: index === state.activeStepIndex ? '#e66f51' : '#d9aa3e', fillOpacity: index === state.activeStepIndex ? 0.48 : 0.28 }).addTo(mapOverlay);
+    if (index === state.activeStepIndex) {
+      L.rectangle(dofusCellBounds(step), { renderer, interactive: false, color: '#fff2b8', weight: 3, opacity: 0.95, fillColor: '#e66f51', fillOpacity: 0.48 }).addTo(mapOverlay);
+    }
     const marker = L.marker(dofusToLatLng(step), { icon: routeIcon(step, index), title: `${index + 1}. ${step.name} ${coordLabel(step)}`, keyboard: false });
     marker.on('click', () => selectStep(index, false));
     marker.addTo(mapOverlay);
@@ -511,13 +503,20 @@ function updateMapOverlays() {
 }
 
 function routeIcon(step, index) {
+  if (index !== state.activeStepIndex) {
+    return L.divIcon({
+      className: '',
+      html: '<div class="route-dot"></div>',
+      iconSize: [12, 12],
+      iconAnchor: [6, 6]
+    });
+  }
   const image = step.selected[0]?.resource.icon;
-  const compact = state.plan.route.length > 36;
   return L.divIcon({
     className: '',
-    html: `<div class="route-marker ${compact ? 'is-compact' : ''} ${index === state.activeStepIndex ? 'is-active' : ''}">${image ? `<img src="${escapeHtml(image)}" alt="" />` : ''}<span>${index + 1}</span></div>`,
-    iconSize: compact ? [30, 30] : [38, 38],
-    iconAnchor: compact ? [15, 15] : [19, 19]
+    html: `<div class="route-marker is-active">${image ? `<img src="${escapeHtml(image)}" alt="" />` : ''}<span>${index + 1}</span></div>`,
+    iconSize: [38, 38],
+    iconAnchor: [19, 19]
   });
 }
 
@@ -642,9 +641,17 @@ function scheduleRefresh({ setup = false, fit = false } = {}) {
     renderTopbarActions();
     renderMapHead();
     renderRun();
+    updateWorkspaceMode();
     updateMapOverlays();
     if (fit) fitRoute();
   });
+}
+
+function updateWorkspaceMode() {
+  const workspace = app.querySelector('.workspace');
+  if (!workspace) return;
+  workspace.classList.toggle('is-profile-compact', state.profileReady && !state.profileEditing);
+  requestAnimationFrame(() => map?.invalidateSize({ animate: false }));
 }
 
 function renderTutorial() {
@@ -775,7 +782,12 @@ app.addEventListener('click', (event) => {
   } else if (type === 'calculate') {
     if (!state.primaryJob) return;
     state.profileReady = true;
+    state.profileEditing = false;
     scheduleRefresh({ setup: true, fit: true });
+  } else if (type === 'edit-profile') {
+    state.profileEditing = !state.profileEditing;
+    renderTopbarActions();
+    updateWorkspaceMode();
   } else if (type === 'fit-route') {
     scheduleRefresh({ fit: true });
   } else if (type === 'focus-step') {
