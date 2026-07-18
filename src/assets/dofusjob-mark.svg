@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="DofusJob">
+  <rect x="7" y="7" width="50" height="50" rx="8" fill="#18211b" stroke="#e4bd52" stroke-width="3"/>
+  <path d="M21 41 28 23l15-7-7 17-15 8Z" fill="#e4bd52"/>
+  <path d="m28 23 8 10-15 8 7-18Z" fill="#f6d978"/>
+  <circle cx="32" cy="32" r="4" fill="#18211b"/>
+</svg>

@@ -1,7 +1,7 @@
 import './styles.css';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
-import brandMark from './assets/dofusjob-mark.png';
+import brandMark from './assets/dofusjob-mark.svg';
 import {
   ArrowRight,
   Check,
@@ -136,6 +136,11 @@ function createState() {
     preferZaaps: saved?.preferZaaps !== false,
     mapCenter: saved?.mapCenter || null,
     mapZoom: Number(saved?.mapZoom ?? 2),
+    leftPanelWidth: clamp(Number(saved?.leftPanelWidth) || 310, 260, 520),
+    rightPanelWidth: clamp(Number(saved?.rightPanelWidth) || 360, 280, 560),
+    tutorialSeen: saved?.tutorialSeen === true,
+    tutorialStep: 0,
+    routeListOpen: false,
     resourceSearch: '',
     activeStepIndex: 0,
     plan: null
@@ -199,10 +204,11 @@ function renderShell() {
       <header class="topbar">
         <div class="brand"><img class="brand-icon" src="${brandMark}" alt="" /><span><strong>DofusJob</strong><small>Routes de récolte</small></span></div>
         <div class="truth-badge"><span></span> ${currentSpots().length.toLocaleString('fr-FR')} maps vérifiées</div>
-        ${state.profileReady ? '<button class="button button-quiet" type="button" data-action="copy-route"><i data-lucide="clipboard"></i> Copier la boucle</button>' : '<span class="profile-status">Configure ton profil pour commencer</span>'}
+        <div class="topbar-actions" id="topbar-actions"></div>
       </header>
-      <div class="workspace">
+      <div class="workspace" style="--left-panel:${state.leftPanelWidth}px;--right-panel:${state.rightPanelWidth}px">
         <aside class="setup-panel" id="setup-panel"></aside>
+        <div class="panel-resizer" data-resizer="left" role="separator" aria-label="Redimensionner les réglages" aria-orientation="vertical" title="Glisser pour redimensionner · double-clic pour réinitialiser"></div>
         <main class="map-panel">
           <div class="map-head" id="map-head"></div>
           <div class="map-frame">
@@ -214,16 +220,31 @@ function renderShell() {
             </div>
           </div>
         </main>
+        <div class="panel-resizer" data-resizer="right" role="separator" aria-label="Redimensionner la feuille de route" aria-orientation="vertical" title="Glisser pour redimensionner · double-clic pour réinitialiser"></div>
         <aside class="run-panel" id="run-panel"></aside>
       </div>
       <div class="toast" id="toast" aria-live="polite"></div>
+      <div id="tutorial-root"></div>
     </div>
   `;
+  renderTopbarActions();
   renderSetup();
   renderMapHead();
   renderRun();
+  renderTutorial();
   createIcons({ icons: ICONS });
   mountMap();
+  bindPanelResizers();
+}
+
+function renderTopbarActions() {
+  const actions = app.querySelector('#topbar-actions');
+  if (!actions) return;
+  actions.innerHTML = `
+    <button class="help-button" type="button" data-action="tutorial" aria-label="Ouvrir le tutoriel"><span>?</span> Aide</button>
+    ${state.profileReady ? '<button class="button button-quiet" type="button" data-action="copy-route"><i data-lucide="clipboard"></i> Copier la boucle</button>' : '<span class="profile-status">Choisis un métier pour commencer</span>'}
+  `;
+  createIcons({ icons: ICONS });
 }
 
 function renderSetup(preserveScroll = false) {
@@ -232,14 +253,15 @@ function renderSetup(preserveScroll = false) {
   const oldScroll = preserveScroll ? panel.querySelector('.resource-list')?.scrollTop || 0 : 0;
   const primary = state.primaryJob ? JOBS[state.primaryJob] : null;
   const resources = getPickerResources();
+  const enabledCount = Math.max(1, state.enabledJobs.size);
+  const routeSummary = `${state.objective === 'xp' ? 'XP max' : 'Stock ciblé'} · ${state.maxStops} maps · ${state.startMode === 'auto' ? 'départ optimal' : coordLabel(state.start)}${enabledCount > 1 ? ` · ${enabledCount} métiers` : ''}`;
   panel.innerHTML = `
     <div class="setup-intro">
-      <span class="eyebrow">Prépare ta sortie</span>
-      <strong>Qu’est-ce qu’on monte aujourd’hui ?</strong>
-      <p>Renseigne tes niveaux, DofusJob s’occupe du point de départ et de l’ordre des maps.</p>
+      <span class="eyebrow">${state.profileReady ? 'Ton profil' : 'Nouvelle sortie'}</span>
+      <strong>${state.profileReady ? 'Ajuste puis recalcule.' : 'Quel métier montes-tu ?'}</strong>
+      <p>Choisis ton métier et ton niveau. Le reste est déjà réglé pour maximiser ton XP.</p>
     </div>
-    <section class="setup-block">
-      <div class="step-label"><span>1</span><div><strong>Tes métiers</strong><small>Choisis le métier principal</small></div></div>
+    <section class="setup-block quick-profile">
       <div class="job-tabs">
         ${JOB_ORDER.map((id) => {
           const job = JOBS[id];
@@ -247,63 +269,54 @@ function renderSetup(preserveScroll = false) {
         }).join('')}
       </div>
       ${primary ? `<label class="level-field">
-        <span><b>${escapeHtml(primary.label)}</b><small>Niveau actuel</small></span>
+        <span><b>Ton niveau ${escapeHtml(primary.label)}</b><small>Entre 1 et 200</small></span>
         <input id="primary-level" type="number" min="1" max="200" value="${state.levels[state.primaryJob]}" />
       </label>` : '<div class="choose-job-hint">Choisis le métier que tu veux monter.</div>'}
-      <details class="mix-jobs" ${primary ? '' : 'hidden'}>
-        <summary><span>Mixer d’autres métiers</span><small>Récolter ce qui est rentable sur le passage</small></summary>
-        <div class="mix-list">
-          ${JOB_ORDER.filter((id) => id !== state.primaryJob).map((id) => `
-            <label><input type="checkbox" data-secondary-job="${id}" ${state.enabledJobs.has(id) ? 'checked' : ''} /><img src="${escapeHtml(jobResourceIcon(id))}" alt="" /><span>${escapeHtml(JOBS[id].label)}</span><input class="mini-level" type="number" min="1" max="200" data-job-level="${id}" value="${state.levels[id]}" aria-label="Niveau ${escapeHtml(JOBS[id].label)}" /></label>
-          `).join('')}
+      <button type="button" class="button button-primary button-block calculate-main" data-action="calculate" ${primary ? '' : 'disabled'}><i data-lucide="play"></i> ${state.profileReady ? 'Recalculer ma route' : 'Créer ma route'}</button>
+      <details class="advanced-options" ${state.objective === 'resource' ? 'open' : ''}>
+        <summary><span><strong>Personnaliser la route</strong><small>${escapeHtml(routeSummary)}</small></span><i data-lucide="chevron-right"></i></summary>
+        <div class="advanced-body">
+          <div class="option-group">
+            <span class="option-title">Priorité</span>
+            <div class="objective-switch">
+              <button type="button" data-action="objective" data-objective="xp" class="${state.objective === 'xp' ? 'is-active' : ''}"><i data-lucide="gauge"></i><span><strong>XP rapide</strong><small>Rentabilité globale</small></span></button>
+              <button type="button" data-action="objective" data-objective="resource" class="${state.objective === 'resource' ? 'is-active' : ''}"><i data-lucide="target"></i><span><strong>Faire du stock</strong><small>Ressources choisies</small></span></button>
+            </div>
+            ${state.objective === 'resource' ? renderResourcePicker(resources) : ''}
+          </div>
+          <details class="mix-jobs" ${primary ? '' : 'hidden'}>
+            <summary><span>Mixer d’autres métiers</span><small>Optionnel</small></summary>
+            <div class="mix-list">
+              ${JOB_ORDER.filter((id) => id !== state.primaryJob).map((id) => `
+                <label><input type="checkbox" data-secondary-job="${id}" ${state.enabledJobs.has(id) ? 'checked' : ''} /><img src="${escapeHtml(jobResourceIcon(id))}" alt="" /><span>${escapeHtml(JOBS[id].label)}</span><input class="mini-level" type="number" min="1" max="200" data-job-level="${id}" value="${state.levels[id]}" aria-label="Niveau ${escapeHtml(JOBS[id].label)}" /></label>
+              `).join('')}
+            </div>
+          </details>
+          <label class="length-control">
+            <span><b>Longueur maximale</b><output id="route-length-output">${state.maxStops} maps</output></span>
+            <input id="route-length" type="range" min="6" max="80" step="1" value="${state.maxStops}" />
+          </label>
+          <div class="start-choice">
+            <span class="option-title">Point de départ</span>
+            <div class="start-segments">
+              <button type="button" data-action="start-mode" data-mode="auto" class="${state.startMode === 'auto' ? 'is-active' : ''}"><i data-lucide="sparkles"></i><span><strong>Optimal</strong><small>N’importe où</small></span></button>
+              <button type="button" data-action="start-mode" data-mode="manual" class="${state.startMode === 'manual' ? 'is-active' : ''}"><i data-lucide="map-pin"></i><span><strong>Ma position</strong><small>Depuis X, Y</small></span></button>
+            </div>
+          </div>
+          ${state.startMode === 'manual' ? `<div class="manual-start">
+            <span>Coordonnées</span>
+            <label>X <input id="start-x" type="number" value="${state.start.x}" /></label>
+            <label>Y <input id="start-y" type="number" value="${state.start.y}" /></label>
+          </div>` : ''}
+          <label class="fast-travel"><input id="fast-travel" type="checkbox" ${state.preferZaaps ? 'checked' : ''} /> Utiliser zaaps et transporteurs</label>
         </div>
       </details>
-    </section>
-    <section class="setup-block objective-block">
-      <div class="step-label"><span>2</span><div><strong>Ta priorité</strong><small>Ce que le calcul doit favoriser</small></div></div>
-      <div class="objective-switch">
-        <button type="button" data-action="objective" data-objective="xp" class="${state.objective === 'xp' ? 'is-active' : ''}"><i data-lucide="gauge"></i><span><strong>Monter vite</strong><small>Meilleure XP par minute</small></span></button>
-        <button type="button" data-action="objective" data-objective="resource" class="${state.objective === 'resource' ? 'is-active' : ''}"><i data-lucide="target"></i><span><strong>Faire du stock</strong><small>Ressources précises</small></span></button>
-      </div>
-      ${state.objective === 'xp' ? renderXpExplanation() : renderResourcePicker(resources)}
-    </section>
-    <section class="setup-block route-options">
-      <div class="step-label"><span>3</span><div><strong>Ta sortie</strong><small>Longueur et point de départ</small></div></div>
-      <label class="length-control">
-        <span><b>Nombre maximum de maps</b><output id="route-length-output">${state.maxStops} max</output></span>
-        <input id="route-length" type="range" min="6" max="80" step="1" value="${state.maxStops}" />
-        <small>Le calcul s'arrête plus tôt s'il n'y a plus de map rentable à ton niveau.</small>
-      </label>
-      <div class="start-choice">
-        <span class="option-title">Point de départ</span>
-        <div class="start-segments">
-          <button type="button" data-action="start-mode" data-mode="auto" class="${state.startMode === 'auto' ? 'is-active' : ''}"><i data-lucide="sparkles"></i><span><strong>Le plus rentable</strong><small>Je peux partir de n’importe où</small></span></button>
-          <button type="button" data-action="start-mode" data-mode="manual" class="${state.startMode === 'manual' ? 'is-active' : ''}"><i data-lucide="map-pin"></i><span><strong>Ma position</strong><small>Optimiser depuis une coordonnée</small></span></button>
-        </div>
-      </div>
-      ${state.startMode === 'manual' ? `<div class="manual-start">
-        <span>Coordonnées actuelles</span>
-        <label>X <input id="start-x" type="number" value="${state.start.x}" /></label>
-        <label>Y <input id="start-y" type="number" value="${state.start.y}" /></label>
-      </div>` : '<div class="auto-start-note"><i data-lucide="locate-fixed"></i><span>Le premier <code>/travel</code> t’emmènera directement sur la meilleure map.</span></div>'}
-      <label class="fast-travel"><input id="fast-travel" type="checkbox" ${state.preferZaaps ? 'checked' : ''} /> Utiliser zaaps et transporteurs</label>
-      <button type="button" class="button button-primary button-block" data-action="calculate" ${primary ? '' : 'disabled'}><i data-lucide="play"></i> ${state.profileReady ? 'Mettre la boucle à jour' : 'Calculer ma meilleure boucle'}</button>
     </section>
     <footer class="data-credit">Données issues de DofusDB. Utilisation soumise à la LPNC-IA 1.0.<br />Cartes et illustrations © Ankama.</footer>
   `;
   createIcons({ icons: ICONS });
   const list = panel.querySelector('.resource-list');
   if (list) list.scrollTop = oldScroll;
-}
-
-function renderXpExplanation() {
-  const jobs = [...state.enabledJobs].map((id) => JOBS[id].label).join(' + ');
-  return `
-    <div class="mode-explanation">
-      <div class="synergy-art">${[...state.enabledJobs].slice(0, 3).map((id) => `<img src="${escapeHtml(jobResourceIcon(id))}" alt="" />`).join('')}</div>
-      <div><strong>Chaque map est évaluée dans son ensemble.</strong><p>Trois ressources intéressantes au même endroit passent devant un node isolé plus haut niveau lorsque la map rapporte davantage.</p><small>${escapeHtml(jobs)} · ressources accessibles à tes niveaux</small></div>
-    </div>
-  `;
 }
 
 function jobResourceIcon(jobId) {
@@ -345,8 +358,8 @@ function renderMapHead() {
   if (!head) return;
   if (!state.profileReady) {
     head.innerHTML = `
-      <div><span class="eyebrow">Monde des Douze</span><strong>Ta route apparaîtra ici</strong></div>
-      <div class="setup-progress"><span class="${state.primaryJob ? 'is-done' : ''}">1. Métier</span><span class="${state.primaryJob ? 'is-done' : ''}">2. Niveau</span><span>3. Calcul</span></div>
+      <div><span class="eyebrow">Monde des Douze</span><strong>${state.primaryJob ? `${escapeHtml(JOBS[state.primaryJob].label)} niveau ${state.levels[state.primaryJob]} · prêt à calculer` : 'Choisis ton métier pour commencer'}</strong></div>
+      <div class="setup-progress"><span class="${state.primaryJob ? 'is-done' : ''}">Profil</span><span>Route</span></div>
     `;
     return;
   }
@@ -368,15 +381,10 @@ function renderRun() {
   if (!state.profileReady) {
     panel.innerHTML = `
       <div class="onboarding-panel">
-        <img class="onboarding-mark" src="${brandMark}" alt="" />
-        <span class="eyebrow">Ton compagnon de récolte</span>
-        <strong>Une boucle faite pour ton personnage.</strong>
-        <p>Pas de route générique avant de connaître ton métier. Une fois ton profil prêt, tu obtiens chaque coordonnée, chaque ressource et chaque commande à copier.</p>
-        <div class="onboarding-checks">
-          <div class="${state.primaryJob ? 'is-done' : ''}"><span>${state.primaryJob ? '<i data-lucide="check"></i>' : '1'}</span><div><b>${state.primaryJob ? JOBS[state.primaryJob].label : 'Choisis ton métier'}</b><small>${state.primaryJob ? `Niveau ${state.levels[state.primaryJob]}` : 'Le calcul respecte ton niveau'}</small></div></div>
-          <div class="is-done"><span><i data-lucide="check"></i></span><div><b>${state.objective === 'resource' ? 'Faire du stock' : 'Monter vite'}</b><small>${state.objective === 'resource' ? 'Tu choisis les ressources' : 'Synergies entre ressources'}</small></div></div>
-          <div><span>3</span><div><b>Reçois ta feuille de route</b><small>Une commande par map</small></div></div>
-        </div>
+        <span class="empty-route-icon"><i data-lucide="route"></i></span>
+        <strong>Ta feuille de route apparaîtra ici.</strong>
+        <p>Une commande <code>/travel</code>, les ressources à récolter, puis l’étape suivante.</p>
+        <button type="button" class="text-button" data-action="tutorial">Voir le tutoriel</button>
       </div>
     `;
     createIcons({ icons: ICONS });
@@ -400,10 +408,13 @@ function renderRun() {
       <button type="button" class="button button-primary button-block" data-action="next-step" ${state.activeStepIndex >= plan.route.length - 1 ? 'disabled' : ''}>Étape suivante <i data-lucide="arrow-right"></i></button>
     </section>
     <section class="route-list-section">
-      <div class="route-title"><div><span class="eyebrow">Itinéraire complet</span><strong>Ta boucle map par map</strong></div><button type="button" data-action="copy-route" aria-label="Copier la route"><i data-lucide="clipboard"></i></button></div>
-      <ol class="route-list">
-        ${plan.route.map((step, index) => renderRouteStep(step, index)).join('')}
-      </ol>
+      <div class="route-title">
+        <button class="route-list-toggle" type="button" data-action="toggle-route-list" aria-expanded="${state.routeListOpen}">
+          <i data-lucide="chevron-right"></i><span><strong>${state.routeListOpen ? 'Masquer la boucle' : `Voir les ${plan.route.length} étapes`}</strong><small>Itinéraire map par map</small></span>
+        </button>
+        <button type="button" data-action="copy-route" aria-label="Copier la route"><i data-lucide="clipboard"></i></button>
+      </div>
+      ${state.routeListOpen ? `<ol class="route-list">${plan.route.map((step, index) => renderRouteStep(step, index)).join('')}</ol>` : ''}
     </section>
   `;
   createIcons({ icons: ICONS });
@@ -628,11 +639,111 @@ function scheduleRefresh({ setup = false, fit = false } = {}) {
   refreshFrame = requestAnimationFrame(() => {
     computePlan();
     if (setup) renderSetup(true);
+    renderTopbarActions();
     renderMapHead();
     renderRun();
     updateMapOverlays();
     if (fit) fitRoute();
   });
+}
+
+function renderTutorial() {
+  const root = app.querySelector('#tutorial-root');
+  if (!root) return;
+  if (state.tutorialSeen) {
+    root.innerHTML = '';
+    return;
+  }
+  const slides = [
+    {
+      icon: jobResourceIcon('miner'),
+      eyebrow: '1 sur 3',
+      title: 'Choisis un métier et ton niveau',
+      text: 'C’est tout ce qu’il faut pour commencer. DofusJob ignore les ressources encore verrouillées.'
+    },
+    {
+      icon: brandMark,
+      eyebrow: '2 sur 3',
+      title: 'Laisse le départ sur Optimal',
+      text: 'Le calcul choisit lui-même la meilleure première map. Les autres réglages sont optionnels.'
+    },
+    {
+      icon: jobResourceIcon('lumberjack'),
+      eyebrow: '3 sur 3',
+      title: 'Suis une étape à la fois',
+      text: 'Copie /travel, récolte ce qui est affiché, puis clique sur Étape suivante.'
+    }
+  ];
+  const slide = slides[state.tutorialStep] || slides[0];
+  root.innerHTML = `
+    <div class="tutorial-backdrop" role="presentation">
+      <section class="tutorial-dialog" role="dialog" aria-modal="true" aria-labelledby="tutorial-title">
+        <button class="tutorial-close" type="button" data-action="tutorial-close" aria-label="Fermer">×</button>
+        <div class="tutorial-visual"><img src="${escapeHtml(slide.icon)}" alt="" /></div>
+        <span class="eyebrow">${slide.eyebrow}</span>
+        <h2 id="tutorial-title">${slide.title}</h2>
+        <p>${slide.text}</p>
+        <div class="tutorial-footer">
+          <div class="tutorial-dots" aria-hidden="true">${slides.map((_, index) => `<span class="${index === state.tutorialStep ? 'is-active' : ''}"></span>`).join('')}</div>
+          <div class="tutorial-actions">
+            ${state.tutorialStep > 0 ? '<button class="button button-quiet" type="button" data-action="tutorial-prev">Retour</button>' : ''}
+            <button class="button button-primary" type="button" data-action="${state.tutorialStep === slides.length - 1 ? 'tutorial-close' : 'tutorial-next'}">${state.tutorialStep === slides.length - 1 ? 'Commencer' : 'Suivant'} <i data-lucide="arrow-right"></i></button>
+          </div>
+        </div>
+      </section>
+    </div>
+  `;
+  createIcons({ icons: ICONS });
+}
+
+function bindPanelResizers() {
+  const workspace = app.querySelector('.workspace');
+  const handles = [...app.querySelectorAll('[data-resizer]')];
+  if (!workspace || !handles.length) return;
+  let activeSide = null;
+
+  const resize = (event) => {
+    if (!activeSide || window.innerWidth <= 1040) return;
+    const bounds = workspace.getBoundingClientRect();
+    if (activeSide === 'left') {
+      const max = Math.max(260, bounds.width - state.rightPanelWidth - 440);
+      state.leftPanelWidth = clamp(event.clientX - bounds.left, 260, Math.min(520, max));
+      workspace.style.setProperty('--left-panel', `${state.leftPanelWidth}px`);
+    } else {
+      const max = Math.max(280, bounds.width - state.leftPanelWidth - 440);
+      state.rightPanelWidth = clamp(bounds.right - event.clientX, 280, Math.min(560, max));
+      workspace.style.setProperty('--right-panel', `${state.rightPanelWidth}px`);
+    }
+    map?.invalidateSize({ animate: false });
+  };
+
+  const stop = () => {
+    if (!activeSide) return;
+    activeSide = null;
+    document.body.classList.remove('is-resizing');
+    saveState(state);
+    map?.invalidateSize({ animate: false });
+  };
+
+  for (const handle of handles) {
+    handle.addEventListener('pointerdown', (event) => {
+      activeSide = handle.dataset.resizer;
+      handle.setPointerCapture?.(event.pointerId);
+      document.body.classList.add('is-resizing');
+      event.preventDefault();
+    });
+    handle.addEventListener('dblclick', () => {
+      if (handle.dataset.resizer === 'left') state.leftPanelWidth = 310;
+      else state.rightPanelWidth = 360;
+      workspace.style.setProperty('--left-panel', `${state.leftPanelWidth}px`);
+      workspace.style.setProperty('--right-panel', `${state.rightPanelWidth}px`);
+      saveState(state);
+      map?.invalidateSize({ animate: false });
+    });
+  }
+  window.addEventListener('pointermove', resize);
+  window.addEventListener('pointerup', stop);
+  window.addEventListener('pointercancel', stop);
 }
 
 app.addEventListener('click', (event) => {
@@ -673,6 +784,24 @@ app.addEventListener('click', (event) => {
     selectStep(state.activeStepIndex + 1);
   } else if (type === 'copy-route') {
     copyText(exportRouteText(state.plan));
+  } else if (type === 'toggle-route-list') {
+    state.routeListOpen = !state.routeListOpen;
+    renderRun();
+  } else if (type === 'tutorial') {
+    state.tutorialSeen = false;
+    state.tutorialStep = 0;
+    renderTutorial();
+  } else if (type === 'tutorial-next') {
+    state.tutorialStep = Math.min(2, state.tutorialStep + 1);
+    renderTutorial();
+  } else if (type === 'tutorial-prev') {
+    state.tutorialStep = Math.max(0, state.tutorialStep - 1);
+    renderTutorial();
+  } else if (type === 'tutorial-close') {
+    state.tutorialSeen = true;
+    state.tutorialStep = 0;
+    saveState(state);
+    renderTutorial();
   } else if (type === 'zoom-in') {
     map?.zoomIn(0.5, { animate: false });
   } else if (type === 'zoom-out') {
@@ -715,7 +844,7 @@ app.addEventListener('change', (event) => {
 app.addEventListener('input', (event) => {
   if (event.target.id === 'route-length') {
     const output = app.querySelector('#route-length-output');
-    if (output) output.textContent = `${event.target.value} max`;
+    if (output) output.textContent = `${event.target.value} maps`;
     return;
   }
   if (event.target.id !== 'resource-search') return;

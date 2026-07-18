@@ -25,7 +25,10 @@ export function saveState(state) {
       maxStops: state.maxStops,
       preferZaaps: state.preferZaaps,
       mapCenter: state.mapCenter,
-      mapZoom: state.mapZoom
+      mapZoom: state.mapZoom,
+      leftPanelWidth: state.leftPanelWidth,
+      rightPanelWidth: state.rightPanelWidth,
+      tutorialSeen: state.tutorialSeen
     })
   );
 }
